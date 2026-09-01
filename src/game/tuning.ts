@@ -138,7 +138,7 @@ export const CONTACT_TIGHTEN = 0.72;
  *  the runner does, anything that blocks the runner blocks it too — so the
  *  fix cannot be geometric. It breaks through instead: your ink stops it for
  *  a moment, never for good. */
-export const CHASER_BREAK_SECONDS = 1.1;
+export const CHASER_BREAK_SECONDS = 0.35;
 
 /** Forward progress, in px, that clears a stall timer. Generous on purpose:
  *  a body pinned against a wall bounces, and with a small epsilon that jitter
@@ -152,3 +152,10 @@ export const STALL_PROGRESS_EPS = 24;
  *  centre rides RUNNER_RADIUS above the surface, so anything taller than that
  *  cannot be walked through and must be drawn over. */
 export const SPIKE_HEIGHT = 30;
+
+/** Steepest drawn segment the chaser will treat as a surface, as rise/run.
+ *  tan(55 degrees) ~ 1.43. Anything steeper is a wall, not a path, and the
+ *  chaser walks straight through it — which is what stops a vertical stroke
+ *  behind you from penning it. It still walks every ramp and bridge you draw,
+ *  so it genuinely follows your route. */
+export const CHASER_WALKABLE_SLOPE = 1.43;

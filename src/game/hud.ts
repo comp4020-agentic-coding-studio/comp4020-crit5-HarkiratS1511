@@ -386,89 +386,65 @@ function drawRestart(
   const { width: w, height: h } = viewport;
   const unit = Math.min(w, h);
   const cx = w / 2;
-  const cy = h * 0.76;
-  const r = unit * 0.05 * scale;
+  const cy = h * 0.62;
+
+  // A button, not a dot. The dot read as decoration and the playtester asked
+  // for something that looks pressable. A rounded plate with a circular-arrow
+  // glyph says "do this again" in a shape everyone already knows, and does it
+  // without a word — which the spec requires, since instructions of any kind
+  // are forbidden anywhere in this game.
+  const bw = unit * 0.30 * scale;
+  const bh = unit * 0.115 * scale;
+  const r = bh / 2;
+  // A slow breath so it reads as the live element on a still screen.
+  const breathe = 1 + Math.sin(phaseFor * 2.4) * 0.022;
 
   ctx.save();
   ctx.globalAlpha = opacity;
+  ctx.translate(cx, cy);
+  ctx.scale(breathe, breathe);
+
   ctx.strokeStyle = color;
-  ctx.lineWidth = Math.max(1, unit * 0.006);
-  ctx.beginPath();
-  ctx.arc(cx, cy, r * 1.6, 0, Math.PI * 2);
-  ctx.stroke();
-
   ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.arc(cx, cy, r, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-}
-
-// ---------------------------------------------------------------------------
-// The chaser, looming. The first version of this was a giant spiky blob — an
-// "amplified relative" of the chaser's silhouette — and at end-screen scale it
-// read as a cartoon creature rather than as menace. What actually says "it got
-// you", without a word, is the thing that got you: the real chaser figure,
-// drawn large and still, filling the frame it just took.
-//
-// Deliberately motionless once it arrives. Final means final, and stillness is
-// what separates losing from the win screen's slow breathing.
-// ---------------------------------------------------------------------------
-function drawLoomingChaser(
-  ctx: CanvasRenderingContext2D,
-  cx: number,
-  baseY: number,
-  height: number,
-): void {
-  if (height <= 0) return;
-  const u = height / 5.2; // limb unit, as a fraction of overall height
-  ctx.save();
-  ctx.fillStyle = INK;
-  ctx.strokeStyle = INK;
+  ctx.lineWidth = Math.max(1.5, unit * 0.0055);
   ctx.lineCap = "round";
-  ctx.lineJoin = "round";
 
-  const hipY = baseY - u * 2.0;
-  const shoulderY = hipY - u * 1.5;
-  const lean = 0.30;
-  const leanX = (y: number): number => cx + (baseY - y) * lean;
-
-  const limb = (
-    x1: number, y1: number, x2: number, y2: number, x3: number, y3: number, w: number,
-  ): void => {
-    ctx.lineWidth = w;
-    ctx.beginPath();
-    ctx.moveTo(x1, y1);
-    ctx.lineTo(x2, y2);
-    ctx.lineTo(x3, y3);
-    ctx.stroke();
-  };
-
-  // Legs braced wide, mid-stride: caught, not walking.
-  limb(leanX(hipY) - u * 0.1, hipY, cx - u * 0.85, hipY + u * 1.1, cx - u * 1.15, baseY, u * 0.42);
-  limb(leanX(hipY) + u * 0.1, hipY, cx + u * 0.7, hipY + u * 1.2, cx + u * 1.0, baseY, u * 0.42);
-
-  // Torso: heavy, pitched forward.
-  ctx.lineWidth = u * 0.95;
+  // Plate.
   ctx.beginPath();
-  ctx.moveTo(leanX(hipY), hipY);
-  ctx.lineTo(leanX(shoulderY), shoulderY);
+  ctx.moveTo(-bw / 2 + r, -bh / 2);
+  ctx.lineTo(bw / 2 - r, -bh / 2);
+  ctx.arcTo(bw / 2, -bh / 2, bw / 2, 0, r);
+  ctx.arcTo(bw / 2, bh / 2, bw / 2 - r, bh / 2, r);
+  ctx.lineTo(-bw / 2 + r, bh / 2);
+  ctx.arcTo(-bw / 2, bh / 2, -bw / 2, 0, r);
+  ctx.arcTo(-bw / 2, -bh / 2, -bw / 2 + r, -bh / 2, r);
+  ctx.closePath();
+  ctx.globalAlpha = opacity * 0.14;
+  ctx.fill();
+  ctx.globalAlpha = opacity;
   ctx.stroke();
 
-  // Long arms, reaching for the viewer.
-  limb(leanX(shoulderY), shoulderY, leanX(shoulderY) + u * 1.0, shoulderY + u * 0.5,
-       leanX(shoulderY) + u * 1.9, shoulderY + u * 0.15, u * 0.34);
-  limb(leanX(shoulderY), shoulderY, leanX(shoulderY) + u * 0.8, shoulderY + u * 0.85,
-       leanX(shoulderY) + u * 1.6, shoulderY + u * 0.95, u * 0.34);
-
-  // Head, low and forward on the shoulders.
-  const headY = shoulderY - u * 0.5;
+  // Circular-arrow glyph, centred on the plate.
+  const gr = bh * 0.28;
   ctx.beginPath();
-  ctx.ellipse(leanX(headY) + u * 0.18, headY, u * 0.5, u * 0.44, 0.2, 0, Math.PI * 2);
+  ctx.arc(0, 0, gr, Math.PI * 0.32, Math.PI * 1.78);
+  ctx.stroke();
+
+  // Arrowhead on the open end of the arc.
+  const a = Math.PI * 0.32;
+  const hx = Math.cos(a) * gr;
+  const hy = Math.sin(a) * gr;
+  const s2 = gr * 0.62;
+  ctx.beginPath();
+  ctx.moveTo(hx, hy);
+  ctx.lineTo(hx - s2 * 0.15, hy - s2);
+  ctx.lineTo(hx + s2 * 0.85, hy - s2 * 0.35);
+  ctx.closePath();
   ctx.fill();
 
   ctx.restore();
 }
+
 
 // ---------------------------------------------------------------------------
 // Won: earned and calm. A single ring blooms outward from the centre on a
@@ -613,9 +589,10 @@ function drawLost(
   // rather than as an ending — the playtester's words were "why is it just a
   // massive frame of the character". Standing back, with the dark around it
   // doing the work, it reads as the run being over.
+  // No figure. It was asked for as a portrait-free ending: the darkness and
+  // the button carry it, and a giant character on the screen only competed
+  // with the one thing the player is meant to reach for.
   const massRadius = unit * 0.24;
-  const massP = easeOutCubic((t - 0.08) / 0.42);
-  drawLoomingChaser(ctx, cx, cy + massRadius * 0.62, massRadius * 1.05 * massP);
 
   const restart = restartAffordance(t);
   drawConnectorStem(

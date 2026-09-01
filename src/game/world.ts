@@ -6,6 +6,7 @@ import { resolveMovement, segmentsFromPolyline } from "./geometry";
 import { inkCost } from "./ink";
 import { buildLevel } from "./level";
 import {
+  CHASER_WALKABLE_SLOPE,
   SPIKE_HEIGHT,
   STALL_PROGRESS_EPS,
   CHASER_BREAK_SECONDS,
@@ -49,6 +50,27 @@ export function runnerSurfaces(state: GameState): Segment[] {
   const out: Segment[] = [...state.level.groundSegments];
   if (state.level.stub) out.push(...state.level.stub.segments);
   for (const stroke of state.strokes) out.push(...stroke.segments);
+  return out;
+}
+
+/** What the CHASER treats as solid: terrain, plus only those drawn segments
+ *  shallow enough to walk on.
+ *
+ *  A timer was the wrong shape of fix for the walling exploit. Making the
+ *  chaser blind to steep ink removes the exploit outright: a vertical stroke
+ *  is not a surface, so it is not an obstacle, and there is nothing to be
+ *  penned behind. Every ramp and bridge you actually draw is still shallow
+ *  enough for it to use, so it follows your route exactly as intended. */
+function chaserSurfaces(state: GameState): Segment[] {
+  const out: Segment[] = [...state.level.groundSegments];
+  if (state.level.stub) out.push(...state.level.stub.segments);
+  for (const stroke of state.strokes) {
+    for (const seg of stroke.segments) {
+      const run = Math.abs(seg.b.x - seg.a.x);
+      const rise = Math.abs(seg.b.y - seg.a.y);
+      if (run > 1e-6 && rise / run <= CHASER_WALKABLE_SLOPE) out.push(seg);
+    }
+  }
   return out;
 }
 
@@ -212,11 +234,13 @@ export function step(state: GameState, dt: number, chaserDt: number = dt): void 
   // CHASER_BREAK_SECONDS it ignores drawn ink entirely and walks through the
   // wall, colliding with terrain alone until it is moving again. Your ink
   // buys time, never safety.
+  // Backstop only: steep ink is already invisible to it, so this catches the
+  // rarer case of being wedged by walkable geometry.
   const penned = state.chaserStuckFor > CHASER_BREAK_SECONDS;
   advance(
     state.chaser,
     chaseSpeed,
-    penned ? terrainOnly(state.level) : surfaces,
+    penned ? terrainOnly(state.level) : chaserSurfaces(state),
     chaserDt,
   );
   if (state.chaser.pos.x > state.chaserProgressX + STALL_PROGRESS_EPS) {
