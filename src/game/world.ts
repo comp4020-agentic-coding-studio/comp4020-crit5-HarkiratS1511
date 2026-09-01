@@ -69,8 +69,13 @@ export function createState(level: Level): GameState {
 }
 
 /** Advance the world by `dt` seconds of GAME time (already time-dilated by
- *  the caller — slow motion is applied before this, not inside it). */
-export function step(state: GameState, dt: number): void {
+ *  the caller — slow motion is applied before this, not inside it).
+ *
+ *  `chaserDt` is REAL elapsed seconds, and defaults to `dt` only so tests can
+ *  ignore it. The distinction is the game: dilating the chaser along with
+ *  everything else would make holding the pointer free, and a chaser that
+ *  can never close is not a clock. Drawing has to cost ground. */
+export function step(state: GameState, dt: number, chaserDt: number = dt): void {
   if (state.phase !== "running") return;
   state.elapsed += dt;
 
@@ -96,7 +101,9 @@ export function step(state: GameState, dt: number): void {
   // The chaser is ground-bound by construction: it advances at a constant
   // rate and rides the static terrain height, holding its last height across
   // a gap. It cannot mount a drawn line, so elevation is genuine safety.
-  state.chaser.pos.x += CHASER_SPEED * dt;
+  // It advances on REAL time, so every second spent drawing in slow motion is
+  // a second it keeps walking at full speed.
+  state.chaser.pos.x += CHASER_SPEED * chaserDt;
   const groundHere = groundSurfaceYAt(state.chaser.pos.x, state.level.groundSegments);
   if (groundHere !== null) state.chaser.pos.y = groundHere - state.chaser.radius;
 

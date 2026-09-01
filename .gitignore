@@ -2,6 +2,10 @@ node_modules/
 dist/
 *.log
 
+# viewport sensor screenshots (spec/viewport.sensor.test.ts): written for a
+# human to review a check run, not for the repo
+spec/screenshots/
+
 # editor and OS junk
 .DS_Store
 ._*

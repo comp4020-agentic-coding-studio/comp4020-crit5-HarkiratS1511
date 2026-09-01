@@ -5,7 +5,7 @@
 // geometry.ts and the rest of src/game.
 
 import type { GameState, PointerState, Vec2 } from "./types";
-import { REFERENCE_HEIGHT, RUNNER_RADIUS, CHASER_RADIUS, PICKUP_RADIUS } from "./tuning";
+import { REFERENCE_WIDTH, RUNNER_RADIUS, CHASER_RADIUS, PICKUP_RADIUS } from "./tuning";
 
 const PAPER = "#f4f1e8";
 const INK = "#1a1a2e";
@@ -40,7 +40,7 @@ export function cameraFor(
 /** Exported so the pointer transform in main.ts consumes the SAME scale the
  *  renderer uses. Two definitions would drift and land strokes off-cursor. */
 export function worldScale(viewport: { width: number; height: number }): number {
-  return viewport.height / REFERENCE_HEIGHT;
+  return viewport.width / REFERENCE_WIDTH;
 }
 
 /** Draw one frame. `camera` is the world x at the left edge of the view. */

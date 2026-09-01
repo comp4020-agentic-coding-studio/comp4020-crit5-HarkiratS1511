@@ -50,14 +50,15 @@ function start(canvas: HTMLCanvasElement): void {
     const realDt = Math.min((now - last) / 1000, 0.25);
     last = now;
 
-    // Slow motion while drawing. The world still advances, so holding the
-    // pointer to think is never free — the chaser keeps coming.
-    const gameDt = realDt * (input.isDrawing() ? SLOWMO_SCALE : 1);
+    // Slow motion while drawing. The runner's world crawls; the chaser does
+    // not. Dividing the step back out by `slow` gives the chaser the real
+    // seconds that elapsed, so thinking time is paid for in ground.
+    const slow = input.isDrawing() ? SLOWMO_SCALE : 1;
 
-    accumulator += gameDt;
+    accumulator += realDt * slow;
     let guard = 0;
     while (accumulator >= STEP && guard++ < 8) {
-      step(state, STEP);
+      step(state, STEP, STEP / slow);
       accumulator -= STEP;
     }
 

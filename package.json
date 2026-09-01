@@ -10,6 +10,7 @@
     "typecheck": "astro check",
     "check": "pnpm typecheck && pnpm build && vitest run",
     "check:evidence": "node scripts/check-evidence.ts",
+    "check:viewport": "vitest run spec/viewport.sensor.test.ts",
     "test": "vitest run"
   },
   "devDependencies": {
@@ -18,6 +19,7 @@
     "@types/node": "^24.0.0",
     "astro": "^7.1.6",
     "jsdom": "^29.1.1",
+    "playwright": "^1.62.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10"
   },

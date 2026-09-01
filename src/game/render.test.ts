@@ -1,7 +1,10 @@
 import { describe, it, expect } from "vitest";
 import type { GameState, Level, PointerState } from "./types";
-import { RUNNER_RADIUS, CHASER_RADIUS, MAX_INK, REFERENCE_HEIGHT } from "./tuning";
-import { render, cameraFor } from "./render";
+import { RUNNER_RADIUS, CHASER_RADIUS, MAX_INK } from "./tuning";
+// worldScale is imported rather than re-derived: a second copy of the scale
+// formula in the tests is how a scale change passes its own test suite while
+// silently landing strokes away from the cursor in the real game.
+import { render, cameraFor, worldScale } from "./render";
 
 const PORTRAIT = { width: 390, height: 844 };
 const DESKTOP = { width: 1920, height: 1080 };
@@ -110,7 +113,7 @@ describe("cameraFor", () => {
     it(`keeps the runner on screen at ${viewport.width}x${viewport.height}`, () => {
       const state = makeState();
       const camera = cameraFor(state, viewport);
-      const scale = viewport.height / REFERENCE_HEIGHT;
+      const scale = worldScale(viewport);
       const viewWidthWorld = viewport.width / scale;
 
       expect(state.runner.pos.x).toBeGreaterThanOrEqual(camera);
@@ -122,7 +125,7 @@ describe("cameraFor", () => {
     it(`gives more forward than rearward visibility at ${viewport.width}x${viewport.height}`, () => {
       const state = makeState();
       const camera = cameraFor(state, viewport);
-      const scale = viewport.height / REFERENCE_HEIGHT;
+      const scale = worldScale(viewport);
       const viewWidthWorld = viewport.width / scale;
 
       const rearward = state.runner.pos.x - camera;
