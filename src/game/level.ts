@@ -1,13 +1,50 @@
-// The campaign: four hand-authored levels, each with its own structural
-// character, replacing the single 3550px level. Playtest verdict that drove
-// this rewrite: "same levels all across make it different levels, make the
-// levels longer" and "the downhill gap feels like a bug" (a gap whose far
-// side is lower could sometimes be cleared by falling into it with no ink
-// spent at all — see SAFETY below).
+// The campaign: four hand-authored levels, each with its own silhouette.
+//
+// Playtest verdict that drove the previous rewrite: "same levels all across
+// make it different levels, make the levels longer" and "the downhill gap
+// feels like a bug". Playtest verdict that drove THIS one: the world "reads
+// as one flat strip". It did. Every platform was authored flat, at one of a
+// handful of heights, and the only shape in the terrain was a 15px sine
+// ripple laid over a 420px baseline — a straight line with a wobble. The
+// answer here is not a bigger ripple. It is authored relief: ramps, terraces,
+// ledges and towers, so the ground itself climbs and falls by hundreds of
+// pixels and the player is drawing UPHILL RAMPS and DOWNHILL BRIDGES rather
+// than one flat span after another.
 //
 // COORDINATE CONVENTION (from types.ts / tuning.ts): +x right, +y DOWN.
 // "Higher" ground = smaller y. "Lower" ground = larger y. `dy` below always
 // means (landingY - takeoffY): positive = landing LOWER, negative = HIGHER.
+//
+// -----------------------------------------------------------------------
+// THE CAMERA BAND (why the relief is 400px and not 4000px)
+// -----------------------------------------------------------------------
+// render.ts pins the camera vertically: cameraYFor() returns
+// `level.groundY - viewHeightWorld * GROUND_SCREEN_FRACTION` — it does NOT
+// follow the runner up or down. At the marked desktop viewport (1920x1080)
+// worldScale is 2 and the view is 540 world px tall, so the visible band is
+//
+//   [groundY - 389, groundY + 151]
+//
+// and the ink bar sits over the top ~20 world px of it. Terrain outside that
+// band is terrain the player cannot see. (The levels this replaces ran to
+// y = -504 and y = 595 against groundY = 420: the whole back half of level 1
+// was drawn above the top of the screen.) So every level here is authored
+// inside
+//
+//   CEILING = GROUND_Y - 280 = 140   ...   FLOOR = GROUND_Y + 125 = 545
+//
+// which is a 405px window: wide enough for real climbs and real pits, and
+// entirely on screen at both marked viewports. Two consequences worth
+// stating, because both are load-bearing:
+//   * `groundY` is the camera anchor AND the spawn height AND (in
+//     scenery.ts) the height the finish flag is planted at. So every level
+//     starts and ends on ground at exactly GROUND_Y — the flag stands on the
+//     ground it is drawn on, and the runner spawns on solid ground.
+//   * Relief is cheap and gaps are expensive. Elevation delivered by a
+//     terrain ramp inside a platform costs the player nothing; elevation
+//     delivered by a gap has to be paid for in ink. Both are used, but the
+//     ink arithmetic below only ever has to account for the second.
+// -----------------------------------------------------------------------
 //
 // -----------------------------------------------------------------------
 // SAFETY (requirement: no gap may be crossable without drawing)
@@ -27,36 +64,52 @@
 //   R(dy) = RUN_SPEED * sqrt(2*dy / GRAVITY)
 //
 // Every dy>0 gap in this file is built with width well above R(dy) using
-// `downhillWidth(dy, margin)` below. The margin is generous (65-90px) on
-// top of R(dy) to absorb the runner's collision radius and the swept-circle
+// `downhillWidth(dy, margin)` below (exported, and re-checked against every
+// authored drop in level.test.ts). The margin is generous — 70-90px on top
+// of R(dy) — to absorb the runner's collision radius and the swept-circle
 // endpoint capsule (which can catch a falling body slightly before it
-// reaches the platform's nominal corner). This was verified empirically,
-// not just by the formula: every (width, dy) pair actually used below was
-// run through the real physics (createState/step, no strokes) in
-// level.test.ts, and none of them reach the far side. That empirical check
-// also turned up a SECOND failure mode the formula above misses entirely:
-// a gap narrower than roughly the runner's own diameter (2*RUNNER_RADIUS)
-// can never fail to be "touching" ground, flat or not, because the circle
-// is wider than the hole — so every real gap here (even flat dy=0 ones) is
-// also kept comfortably above that diameter floor with margin to spare.
+// reaches the platform's nominal corner). This is verified empirically, not
+// just by the formula: every (width, dy) pair used below is run through the
+// real physics (createState/step, no strokes) in level.test.ts, twice —
+// once in isolation, and once ON THE REAL LEVEL, entering the gap over
+// whatever terrain actually precedes it. That second check is new and it
+// matters here: this file now has ramps, and a ramp is a launcher.
+//
+// That empirical check also turned up a SECOND failure mode the formula
+// above misses entirely: a gap narrower than roughly the runner's own
+// diameter (2*RUNNER_RADIUS = 24px, measured floor ~27px) can never fail to
+// be "touching" ground, flat or not, because the circle is wider than the
+// hole. Every real gap here is at least 90px wide, and the one 30px notch
+// in level 0 is pre-bridged by the teaching stub.
+//
+// THE FLAT LIP RULE. Both simulations above are only representative if the
+// runner arrives at a lip the way the test drives it: level, at RUN_SPEED,
+// with no vertical velocity. A ramp running straight off a lip would break
+// that — an uphill ramp launches the runner UPWARD, which extends the arc
+// well past R(dy). So every gap in this file has at least LIP_FLAT = 140px
+// of dead-flat ground immediately before its takeoff edge and immediately
+// after its landing edge. All relief happens in the interior of a platform,
+// never at its ends. level.test.ts asserts this directly for every gap.
 // -----------------------------------------------------------------------
 //
 // -----------------------------------------------------------------------
 // CLIMB LIMIT (requirement: every gap must ALSO be crossable WITH a line)
 // -----------------------------------------------------------------------
 // The SAFETY section above only proved gaps can't be crossed for free. A
-// later integration pass found the missing inverse: several of Level 3's
-// uphill (dy<0) gaps could not be crossed even by a hand-drawn line, because
-// the straight edge-to-edge bridge was steeper than the runner can actually
-// climb. The auto-run rule (advance() in world.ts sets vel.x = RUN_SPEED
-// every grounded frame, independent of slope) plus gravity plus the
-// STEP_UP_MAX assist together impose a real, empirically-measured ceiling
-// on climbable slope that has no clean closed form (it is NOT simply
-// "45 degrees" or "width >= rise" — that was a guess, and wrong).
+// later integration pass found the missing inverse: several uphill (dy<0)
+// gaps could not be crossed even by a hand-drawn line, because the straight
+// edge-to-edge bridge was steeper than the runner can actually climb. The
+// auto-run rule (advance() in world.ts sets vel.x = RUN_SPEED every grounded
+// frame, independent of slope) plus gravity plus the STEP_UP_MAX assist
+// together impose a real, empirically-measured ceiling on climbable slope
+// that has no clean closed form (it is NOT simply "45 degrees" or
+// "width >= rise" — that was a guess, and wrong).
 //
-// Measured directly (scratch harness: an isolated two-platform level with a
-// single pre-drawn bridging stroke at a given (width, rise), run through
-// the real createState/step loop, binary-searching the critical angle):
+// Measured directly (an isolated two-platform level with a single pre-drawn
+// bridging stroke at a given (width, rise), run through the real
+// createState/step loop, binary-searching the critical angle — the
+// measurement is re-run on every test run, in level.test.ts, rather than
+// trusted as a constant):
 //
 //   CRITICAL ANGLE = 60.00000 degrees, i.e. rise/width = tan(60) = sqrt(3)
 //                    ~= 1.73205, and this is INVARIANT across gap widths
@@ -70,189 +123,181 @@
 // up to the limit), so the risk is purely "did we exceed 60 degrees", not
 // "is a safe-looking angle secretly too slow."
 //
-// Every climbing (dy<0) gap in this file is built with rise/width well
-// below 1.73205 -- the four gaps rebuilt below sit around ratio 1.12-1.15
-// (~48-49 degrees), roughly a third of the way inside the limit with margin
-// to spare for anything a real physics tick or a human's imperfect line
-// might add, while still reading as a steep "cliff face", not a ramp. Every
-// (width, rise) pair actually used below is confirmed climbable by direct
-// simulation in level.test.ts (given exactly the straight bridging line,
-// the runner reaches the far side), in addition to the SAFETY check above
-// (without any line, it always falls).
+// Every climbing (dy<0) gap in this file is built well below 1.73205. The
+// campaign uses the ratio as a difficulty dial, and it escalates:
+//
+//   level 0   no climbing gaps at all (its relief is all terrain ramp)
+//   level 1   0.65 - 0.67   (~33 degrees: a walkable ramp)
+//   level 2   1.14 - 1.23   (~49-51 degrees: a scramble up a tower face)
+//   level 3   1.19 - 1.22   (~50 degrees, but 2.5x the rise of level 1)
+//
+// The steepest thing the campaign ever asks for is ratio 1.23, which is 71%
+// of the measured limit — steep enough to read as a cliff face, with a third
+// of the limit still in hand for whatever a real physics tick or a human's
+// imperfect line adds. Every (width, rise) pair used below is confirmed
+// climbable by direct simulation in level.test.ts (given exactly the
+// straight bridging line, the runner reaches the far side).
+//
+// Terrain ramps INSIDE platforms are held far below all of this — nothing
+// authored here exceeds 0.48 (~26 degrees) uphill — because a terrain ramp
+// is scenery the runner must walk unaided, not a problem it is being asked
+// to solve.
 // -----------------------------------------------------------------------
 
-// MAX_INK appears throughout the ink-arithmetic comments below; only
-// PICKUP_AMOUNT is needed at runtime.
-import { PICKUP_AMOUNT } from "./tuning";
+import { GRAVITY, PICKUP_AMOUNT, RUN_SPEED } from "./tuning";
 import type { Hazard, Level, Pickup, Segment, Stroke, Vec2 } from "./types";
 
 export const LEVEL_COUNT = 4;
 
-const GROUND_Y = 420; // baseline spawn ground height, shared by all levels
+/** Baseline: spawn height, finish height, and the camera's vertical anchor.
+ *  Every level starts and ends here (see THE CAMERA BAND above). */
+const GROUND_Y = 420;
 
-// ---------------------------------------------------------------------------
-// UNDULATION
-//
-// The levels are authored as flat platforms, which read as monotonous. Rather
-// than hand-author rolling terrain (and re-derive every gap's takeoff and
-// landing height, and every ink sum, with it), the flat platforms are the
-// source of truth and undulation is applied afterwards as a pure transform.
-//
-// Two properties make that safe. Each platform's endpoints are preserved
-// EXACTLY, so gap widths, lip heights and every ink figure above are unchanged
-// and every gap test still means what it meant. And a flat margin is kept at
-// both ends, so the runner takes off from and lands on level ground and the
-// "is this gap crossable" simulations remain valid.
-//
-// Amplitude is small and the wavelength long — max slope is around 11 degrees,
-// far inside the measured 60-degree climb limit. It is texture, not obstacle.
-// ---------------------------------------------------------------------------
-const UNDULATION_MARGIN = 130; // flat run-in either side of every gap lip
-const UNDULATION_AMPLITUDE = 15;
-const UNDULATION_WAVELENGTH = 300;
-const UNDULATION_MIN_SPAN = 420; // shorter platforms stay flat
+/** The authored relief window. Terrain outside it is off screen at the
+ *  marked desktop viewport; see THE CAMERA BAND above. */
+export const CEILING_Y = GROUND_Y - 280; // 140: highest ground the campaign uses
+export const FLOOR_Y = GROUND_Y + 125; // 545: lowest ground the campaign uses
 
-/** Deterministic phase per platform, so terrain never shimmers or re-rolls. */
-function undulationPhase(x: number): number {
-  return (Math.sin(x * 0.0137) + Math.sin(x * 0.0061 + 1.7)) * Math.PI;
+/** Dead-flat ground required immediately either side of every gap edge, so
+ *  the runner always takes off and lands level. See THE FLAT LIP RULE. */
+export const LIP_FLAT = 140;
+
+/** Free-fall horizontal range for a drop of `dy`: R(dy) above. */
+export function ballisticRange(dy: number): number {
+  return dy <= 0 ? 0 : RUN_SPEED * Math.sqrt((2 * dy) / GRAVITY);
 }
 
-function undulateSegment(s: Segment): Segment[] {
-  // Only flat, long platforms are undulated; sloped ones are already varied.
-  const span = s.b.x - s.a.x;
-  if (span < UNDULATION_MIN_SPAN || Math.abs(s.b.y - s.a.y) > 0.001) return [s];
+/** The narrowest a dy>0 gap may be and still be uncrossable without ink:
+ *  the ballistic range plus a margin for the runner's radius and the swept
+ *  capsule. Every drop authored below is at or above downhillWidth(dy, 70),
+ *  which level.test.ts re-checks alongside the simulation. */
+export function downhillWidth(dy: number, margin: number): number {
+  return ballisticRange(dy) + margin;
+}
 
-  const innerFrom = s.a.x + UNDULATION_MARGIN;
-  const innerTo = s.b.x - UNDULATION_MARGIN;
-  if (innerTo - innerFrom < UNDULATION_WAVELENGTH) return [s];
+// ---------------------------------------------------------------------------
+// AUTHORING HELPERS
+//
+// A platform is a polyline of nodes with strictly increasing x. Consecutive
+// nodes become ground segments, so a platform can climb, fall and level off
+// inside itself; the space between the last node of one platform and the
+// first node of the next is a gap. This replaces the previous
+// "flat segments + a sine transform applied afterwards" scheme, which could
+// only ever produce a rippled strip, and which moved the ground out from
+// under hazards and pickups after they had been placed.
+// ---------------------------------------------------------------------------
+type Node = Vec2;
 
-  const phase = undulationPhase(s.a.x);
-  const steps = Math.max(4, Math.round((innerTo - innerFrom) / 60));
-  const pts: Vec2[] = [{ x: s.a.x, y: s.a.y }, { x: innerFrom, y: s.a.y }];
-  for (let i = 1; i <= steps; i++) {
-    const x = innerFrom + ((innerTo - innerFrom) * i) / steps;
-    const u = (x - innerFrom) / UNDULATION_WAVELENGTH;
-    // Tapered at both ends so it meets the flat margins without a corner.
-    const taper = Math.sin((Math.PI * (x - innerFrom)) / (innerTo - innerFrom));
-    const y = s.a.y - Math.sin(u * Math.PI * 2 + phase) * UNDULATION_AMPLITUDE * taper;
-    pts.push({ x, y });
-  }
-  pts.push({ x: s.b.x, y: s.b.y });
+function pt(x: number, y: number): Node {
+  return { x, y };
+}
 
+function chain(nodes: Node[]): Segment[] {
   const out: Segment[] = [];
-  for (let i = 0; i < pts.length - 1; i++) out.push(seg(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y));
+  for (let i = 0; i < nodes.length - 1; i++) out.push({ a: nodes[i], b: nodes[i + 1] });
   return out;
 }
 
-function undulate(segments: Segment[]): Segment[] {
-  return segments.flatMap(undulateSegment);
+function ground(platforms: Node[][]): Segment[] {
+  return platforms.flatMap(chain);
 }
 
-/** Ground height at an x over a set of segments; null over a gap. */
-function surfaceAt(x: number, segs: Segment[]): number | null {
-  let best: number | null = null;
-  for (const t of segs) {
-    const lo = Math.min(t.a.x, t.b.x);
-    const hi = Math.max(t.a.x, t.b.x);
-    if (x < lo || x > hi) continue;
-    const span = t.b.x - t.a.x;
-    const u = Math.abs(span) < 1e-6 ? 0 : (x - t.a.x) / span;
-    const y = t.a.y + (t.b.y - t.a.y) * u;
-    if (best === null || y < best) best = y;
-  }
-  return best;
+/** A gentle rise and fall across [x0,x1] on base `y`, cresting `amp` above
+ *  it. Texture for a long flat run, never an obstacle: the steepest section
+ *  is amp*0.62 over a quarter of the span, which at the amplitudes used here
+ *  is under 0.12 (~7 degrees). Both endpoints sit exactly on `y`, so a swell
+ *  can be spliced into a platform without moving anything either side of it.
+ *  Kept clear of gap lips and hazard pads by LIP_FLAT. */
+function swell(x0: number, x1: number, y: number, amp: number): Node[] {
+  const w = x1 - x0;
+  return [
+    pt(x0, y),
+    pt(x0 + w * 0.25, y - amp * 0.62),
+    pt(x0 + w * 0.5, y - amp),
+    pt(x0 + w * 0.75, y - amp * 0.58),
+    pt(x1, y),
+  ];
 }
 
-/** Pickups are authored against flat platforms; undulation then moves the
- *  ground beneath them. Re-seat each one on the terrain that actually exists,
- *  or it floats above a dip and the runner passes underneath it. */
-function seatPickups(pickups: Pickup[], segs: Segment[], above: number): Pickup[] {
-  return pickups.map((pk) => {
-    const y = surfaceAt(pk.pos.x, segs);
-    return y === null ? pk : { ...pk, pos: { x: pk.pos.x, y: y - above } };
-  });
-}
-
-/** Spike fields, placed on the flat margin just inside a platform's start so
- *  they always sit on level ground the player can draw a clean line over. */
-function spikesOn(segments: Segment[], everyNth: number, startAt: number): Hazard[] {
-  const out: Hazard[] = [];
-  // Never in the opening run-up: the first stretch of a level is where the
-  // player is still learning that the runner cannot stop, and a spike field
-  // there kills before anything has been taught.
-  const flat = segments.filter(
-    (s) => s.b.x - s.a.x > 520 && Math.abs(s.b.y - s.a.y) < 0.001 && s.a.x > 700,
-  );
-  for (let i = startAt; i < flat.length; i += everyNth) {
-    const s = flat[i];
-    const width = 92;
-    // Well inside the platform: never adjacent to a lip, so a spike field and
-    // a gap are never the same problem asked twice.
-    const x = s.a.x + (s.b.x - s.a.x) * 0.5 - width / 2;
-    out.push({ x, width, y: s.a.y });
-  }
-  return out;
-}
-
-function seg(ax: number, ay: number, bx: number, by: number): Segment {
-  return { a: { x: ax, y: ay }, b: { x: bx, y: by } };
+/** A spike field standing on flat ground at `y`. Authored explicitly (the
+ *  old scanner guessed at "long flat segments", which silently produced no
+ *  hazards at all the moment platforms stopped being long and flat). Every
+ *  field below sits on a pad with at least LIP_FLAT of flat ground either
+ *  side of it and well clear of any gap edge, so the line that clears it —
+ *  ramp up, span over, ramp down — always has level ground to start and
+ *  finish on. Asserted in level.test.ts. */
+function spikes(x: number, y: number, width = 92): Hazard {
+  return { x, width, y };
 }
 
 function pickup(x: number, y: number): Pickup {
-  return { pos: { x, y }, amount: PICKUP_AMOUNT, taken: false };
+  // 18px of clearance: inside the 38px collection reach (RUNNER_RADIUS +
+  // PICKUP_RADIUS) with room to spare, and visibly sitting on the ground.
+  return { pos: { x, y: y - 18 }, amount: PICKUP_AMOUNT, taken: false };
 }
 
 // =========================================================================
-// LEVEL 0 — "The Lesson": long flat runs with a FEW wide chasms.
-// Also the only level carrying the teaching apparatus (requirement 4).
+// LEVEL 0 — "The Terrace": gentle, teaching. Wide flat run-ins, a handful
+// of forgiving flat chasms, and relief delivered entirely by long, shallow
+// terrain ramps between terraces.
 // =========================================================================
 //
-// Layout (world x):
-//   chaserStartX  startX          NOTCH        GAP1  GAP2   GAP3    GAP4     GAP5      GAP6      finish
-//     -470          0    --650px run-up--    650-680 900-  1350- 2160-   3180-    4440-     5960-      6850
-//                        (no hazard yet)      (30,   950   1440  2320    4860      6530
-//                                              stub)  (50)  (90)  (160)   (260)     (420)     (570)
+// Silhouette: a staircase of broad terraces, dropping once to a low shelf
+// (480) and then stepping up to a high terrace (280) before returning to
+// the baseline for the finish. 200px of elevation across the level, all of
+// it walked rather than drawn: the player's own strokes here are seven
+// straightforward flat spans and one shallow downhill bridge, which is the
+// whole point of the opening level.
 //
-// Gaps 1-2 are flat (dy=0) and narrow: the stranger's first real decisions
-// are forgiving. From gap 3 on, width climbs steeply (160 -> 570) while
-// staying flat — the level's identity is "long, calm running punctuated by
-// a shrinking number of increasingly expensive, wide, but straightforward
-// (non-diagonal) chasms."
+// It is also the only level carrying the teaching apparatus:
+//   * the pre-drawn `stub` over a 30px notch at 660, so the player SEES a
+//     drawn line and its effect before being asked to make one;
+//   * the demonstrating ghost (world.ts spawns it on level 0 only), which
+//     runs 300px ahead, crosses the stub, and falls into the first real gap
+//     at 1010 in plain view;
+//   * render.ts's drawDemoStroke, which traces the answer across that same
+//     first unbridged gap. Both depend on the first real gap being early,
+//     flat and visible: it is at 1010, 55px wide, dy 0, with 320px of flat
+//     run-in — the ghost dies there when the runner is at x=710, i.e. 300px
+//     short of the lip and well inside drawDemoStroke's 620px window.
 function buildLevel0(): Level {
-  const HAZARD_EVERY = 3, HAZARD_START = 0;
   const startX = 0;
   const chaserStartX = -170;
 
-  const groundSegments: Segment[] = [
-    seg(chaserStartX - 300, GROUND_Y, 650, GROUND_Y), // chaser spawn + 650px run-up, no hazard
-    // -- teaching notch, 650..680 (30px): bridged only by `stub` below --
-    seg(680, GROUND_Y, 900, GROUND_Y),
-    // -- gap 1, 900..950 (50px, flat): narrow, forgiving --
-    seg(950, GROUND_Y, 1350, GROUND_Y),
-    // -- gap 2, 1350..1440 (90px, flat): still forgiving --
-    seg(1440, GROUND_Y, 2160, GROUND_Y),
-    // -- gap 3, 2160..2320 (160px, flat) --
-    seg(2320, GROUND_Y, 3180, GROUND_Y),
-    // -- gap 4, 3180..3440 (260px, flat); pickup on the run-in funds it --
-    seg(3440, GROUND_Y, 4440, GROUND_Y),
-    // -- gap 5, 4440..4860 (420px, flat): a wide chasm --
-    seg(4860, GROUND_Y, 5960, GROUND_Y),
-    // -- gap 6, 5960..6530 (570px, flat): the widest chasm, near the end;
-    //    pickup on the run-in funds it --
-    seg(6530, GROUND_Y, 6850, GROUND_Y),
+  const platforms: Node[][] = [
+    // Run-up: 660px of it before the notch, flat where the ghost and the
+    // demonstration need it, with one shallow swell for texture.
+    [pt(-770, 420), ...swell(60, 510, 420, 18), pt(660, 420)],
+    // -- teaching notch, 660..690 (30px): bridged by `stub` below --
+    [pt(690, 420), pt(1010, 420)],
+    // -- gap 1, 1010..1065 (55px, flat): the first real decision --
+    [pt(1065, 420), pt(1245, 420), pt(1585, 352), pt(1745, 352)], // climbs 68 over 340 (0.20)
+    // -- gap 2, 1745..1855 (110px, flat) --
+    [pt(1855, 352), pt(2035, 352), pt(2415, 480), pt(2615, 480)], // falls 128 over 380 (0.34)
+    // -- gap 3, 2615..2815 (200px, flat), onto the low shelf --
+    [pt(2815, 480), pt(3315, 480), pt(3655, 376), pt(3915, 376)], // spike field; climbs 104 over 340 (0.31)
+    // -- gap 4, 3915..4175 (260px, flat) --
+    [pt(4175, 376), pt(4355, 376), pt(4675, 280), pt(4975, 280)], // climbs 96 over 320 (0.30)
+    // -- gap 5, 4975..5275 (300px, DROPS 70): the one downhill bridge --
+    [pt(5275, 350), pt(5495, 350), pt(5855, 420), pt(6215, 420)], // falls 70 over 360 (0.19)
+    // -- gap 6, 6215..6575 (360px, flat) --
+    [pt(6575, 420), pt(7055, 420)],
+    // -- gap 7, 7055..7575 (520px, flat): the widest chasm in the campaign
+    //    that is only a chasm — no height to read, just ink to commit --
+    [pt(7575, 420), pt(8000, 420)],
   ];
 
   // Teaching stub: a small pre-drawn bump across the notch, so the player
   // SEES the shape and effect of a drawn line before ever being asked to
   // draw one themselves. The notch (30px) is narrower than every real gap
-  // (50px minimum), so even without the stub it would be a near-miss, not
-  // a real threat — and per the SAFETY note above, its flat 30px would
-  // still require a line regardless (30 is comfortably clear of the
-  // ~27px diameter-crossing floor empirically measured for dy=0).
+  // (55px minimum), so even without the stub it would be a near-miss rather
+  // than a threat — though per the SAFETY note above its flat 30px is still
+  // over the ~27px diameter-crossing floor, so it would genuinely need a
+  // line.
   const stubPoints: Vec2[] = [
-    { x: 650, y: GROUND_Y },
-    { x: 665, y: GROUND_Y - 10 },
-    { x: 680, y: GROUND_Y },
+    { x: 660, y: 420 },
+    { x: 675, y: 410 },
+    { x: 690, y: 420 },
   ];
   const stub: Stroke = {
     points: stubPoints,
@@ -262,320 +307,358 @@ function buildLevel0(): Level {
     ],
   };
 
-  const pickups: Pickup[] = [
-    pickup(2800, GROUND_Y - 20), // on the run-in to gap 4 (260px)
-    pickup(5400, GROUND_Y - 20), // on the run-in to gap 6 (570px, the big one)
-  ];
-
-  const rolling = undulate(groundSegments);
   return {
-    groundSegments: rolling,
-    hazards: spikesOn(groundSegments, HAZARD_EVERY, HAZARD_START),
-    pickups: seatPickups(pickups, rolling, 18),
+    groundSegments: ground(platforms),
+    hazards: [spikes(3020, 480)], // mid-pad on the 500px low shelf, 205px clear of the lip
+    pickups: [
+      pickup(3800, 376), // on the run-in to gap 4 (260px)
+      pickup(6050, 420), // on the run-in to gap 6 (360px)
+      pickup(6800, 420), // on the run-in to gap 7 (520px, the big one)
+    ],
     startX,
     chaserStartX,
-    finishX: 6850,
+    finishX: 7960,
     index: 0,
     groundY: GROUND_Y,
     stub,
   };
 }
 /*
- * LEVEL 0 INK ARITHMETIC (MAX_INK = 1450, PICKUP_AMOUNT = 260)
- * All 6 real gaps are flat (dy=0), so the cheapest bridge is a straight
- * horizontal line costing exactly `width`:
- *   gap  width  cost
- *    1     50    50.0
- *    2     90    90.0
- *    3    160   160.0
- *    4    260   260.0
- *    5    420   420.0
- *    6    570   570.0
- *              -------
- *               1550.0  minimal total ink for all 6 real gaps
- * 1550 > MAX_INK (1450): the level is NOT beatable on starting ink alone —
- * the two pickups are not decoration. 2 pickups * 260 = 520.
- * 1450 + 520 = 1970 >= 1550, with 420px of slack (~27%) over the
- * theoretical minimum — real headroom for a human who draws nowhere near
- * an optimal line, not just enough to survive a perfect one.
- * Skipping either pickup leaves only 1450+260=1710 >= 1550: the level stays
- * technically beatable missing one pickup (this level's margin is generous
- * on purpose), but starting ink alone (1450 < 1550) is still not enough —
- * pickups still matter. Length: finishX(6850) - startX(0) = 6850px, well
- * within the 6000-9000 target and nearly double the old single level
- * (3550px).
+ * LEVEL 0 INK ARITHMETIC (MAX_INK = 2050, PICKUP_AMOUNT = 260)
+ * Cheapest bridge per gap is the straight edge-to-edge line, hypot(w, dy):
+ *   gap  width   dy   cost
+ *    1     55     0     55.0
+ *    2    110     0    110.0
+ *    3    200     0    200.0
+ *    4    260     0    260.0
+ *    5    300   +70    308.1
+ *    6    360     0    360.0
+ *    7    520     0    520.0
+ *                     -------
+ *                      1813.1
+ * Spike fields cost ink too, and the cheapest shape that clears one is a
+ * ramp up, a span over and a ramp down: 2*hypot(100, SPIKE_HEIGHT+10) +
+ * width + 12 = 2*107.7 + 92 + 12 = 319.4 per field. One field here:
+ *   1813.1 + 319.4 = 2132.5  minimal total ink for the level
+ * 2132.5 > MAX_INK (2050): the level is NOT beatable on starting ink alone,
+ * so the three pickups are not decoration. 3 * 260 = 780, and the teaching
+ * stub is charged against the player's well at spawn (createState), costing
+ * 36.1, so the real budget is 2050 - 36.1 + 780 = 2793.9.
+ *   headroom = 2793.9 - 2132.5 = 661.4, i.e. 31% over the theoretical
+ *   minimum line set.
+ * That headroom is the point, not slack: nobody draws the minimum. Charging
+ * a realistic hand — every line 15% longer than optimal plus 20px of
+ * overshoot at each end — costs 1.15*2132.5 + 8*20 = 2612.4, which still
+ * fits inside 2793.9 with 181 to spare. level.test.ts checks exactly that
+ * sum for every level. Length: 7960 - 0 = 7960px.
+ * Elevation: 280 (high terrace) .. 480 (low shelf) = 200px of relief.
  */
 
 // =========================================================================
-// LEVEL 1 — "The Staircase": stepped ascending platforms.
+// LEVEL 1 — "The Stair": a staircase up to a high plateau, a long span
+// across the top, then a staircase back down.
 // =========================================================================
 //
-// Every real gap lands HIGHER than it took off (dy < 0), so this level is
-// immune to the downhill free-fall bug by construction (gravity can never
-// carry the runner up). The climb steepens gap over gap: width and height
-// both grow every step, so a flat line stops being an option (it would
-// undershoot) well before the level ends.
+// Silhouette: unmistakable — five flat plateaus stepping UP (420 -> 160),
+// a long level run at altitude, then four stepping DOWN (160 -> 420). No
+// ramps anywhere: every change in height is a step the player has to draw,
+// so this is the level that teaches the two diagonal strokes the rest of
+// the campaign is built from. The ascent is gentle (ratio 0.65-0.67, ~33
+// degrees, half the measured climb limit); the descent introduces the
+// downhill bridge, where the danger is not the slope but the SAFETY floor —
+// each drop is sized well past R(dy) so falling into it is never a shortcut.
+//
+// The 480px span across the high plateau (gap 5) is the campaign's first
+// ink-economy problem: a single stroke costing more than a quarter of the
+// starting well, with no height to help and nothing to do but commit.
 function buildLevel1(): Level {
-  const HAZARD_EVERY = 3, HAZARD_START = 0;
   const startX = 0;
   const chaserStartX = -150;
 
-  const groundSegments: Segment[] = [
-    seg(chaserStartX - 300, GROUND_Y, 980, GROUND_Y),
-    // -- gap, 980..1035 (55px, climbs 20px) --
-    seg(1035, 400, 1475, 400),
-    // -- gap, 1475..1543 (68px, climbs 32px) --
-    seg(1543, 368, 2003, 368),
-    // -- gap, 2003..2085 (82px, climbs 46px) --
-    seg(2085, 322, 2565, 322),
-    // -- gap, 2565..2661 (96px, climbs 60px) --
-    seg(2661, 262, 3161, 262),
-    // -- gap, 3161..3273 (112px, climbs 78px); pickup on the run-in --
-    seg(3273, 184, 3793, 184),
-    // -- gap, 3793..3921 (128px, climbs 96px) --
-    seg(3921, 88, 4461, 88),
-    // -- gap, 4461..4606 (145px, climbs 116px) --
-    seg(4606, -28, 5166, -28),
-    // -- gap, 5166..5328 (162px, climbs 136px) --
-    seg(5328, -164, 5908, -164),
-    // -- gap, 5908..6088 (180px, climbs 158px); pickup on the run-in --
-    seg(6088, -322, 6688, -322),
-    // -- gap, 6688..6888 (200px, climbs 182px): the steepest step --
-    seg(6888, -504, 7308, -504),
+  const platforms: Node[][] = [
+    [pt(-750, 420), ...swell(120, 610, 420, 16), pt(760, 420)],
+    // -- gap 1, 760..850 (90px, CLIMBS 60; ratio 0.67) --
+    [pt(850, 360), pt(1350, 360)], // spike field at 1050
+    // -- gap 2, 1350..1445 (95px, CLIMBS 65; ratio 0.68) --
+    [pt(1445, 295), pt(1845, 295)],
+    // -- gap 3, 1845..1945 (100px, CLIMBS 65; ratio 0.65) --
+    [pt(1945, 230), pt(2445, 230)], // spike field at 2130
+    // -- gap 4, 2445..2550 (105px, CLIMBS 70; ratio 0.67) --
+    [pt(2550, 160), pt(3200, 160)], // the high plateau, dead level
+    // -- gap 5, 3200..3680 (480px, flat, at altitude): the ink problem --
+    [pt(3680, 160), pt(4180, 160)],
+    // -- gap 6, 4180..4330 (150px, DROPS 70) --
+    [pt(4330, 230), pt(4780, 230)],
+    // -- gap 7, 4780..4940 (160px, DROPS 70) --
+    [pt(4940, 300), pt(5390, 300)],
+    // -- gap 8, 5390..5560 (170px, DROPS 60) --
+    [pt(5560, 360), pt(6010, 360)],
+    // -- gap 9, 6010..6190 (180px, DROPS 60): back to the baseline --
+    [pt(6190, 420), pt(6700, 420)],
   ];
 
-  const pickups: Pickup[] = [
-    pickup(3500, 184 - 18), // on the run-in to the 112px/78px-climb gap
-    pickup(6400, -322 - 18), // on the run-in to the final, steepest step
-  ];
-
-  const rolling = undulate(groundSegments);
   return {
-    groundSegments: rolling,
-    hazards: spikesOn(groundSegments, HAZARD_EVERY, HAZARD_START),
-    pickups: seatPickups(pickups, rolling, 18),
+    groundSegments: ground(platforms),
+    hazards: [spikes(1050, 360), spikes(2130, 230)],
+    pickups: [
+      pickup(1700, 295), // on the second step
+      pickup(2900, 160), // on the high plateau, funding the 480px span
+      pickup(3950, 160), // on the far side of it, funding the descent
+      pickup(5150, 300), // midway down the stair
+    ],
     startX,
     chaserStartX,
-    finishX: 7308,
+    finishX: 6640,
     index: 1,
     groundY: GROUND_Y,
     stub: null,
   };
 }
 /*
- * LEVEL 1 INK ARITHMETIC (MAX_INK = 1450, PICKUP_AMOUNT = 260)
- * Every real gap climbs (dy<0); minimal bridge cost per gap is
- * hypot(width, |dy|). The steepest, ratio 182/200 = 0.91 (~42.4 degrees),
- * sits well inside the empirically measured 60-degree climb limit (see the
- * CLIMB LIMIT note at the top of the file) with plenty to spare, so this
- * level was never at risk of the Level-3 defect:
- *   width   |dy|   cost
- *    55      20    58.5
- *    68      32    75.2
- *    82      46    94.0
- *    96      60   113.2
- *   112      78   136.5
- *   128      96   160.0
- *   145     116   185.7
- *   162     136   211.5
- *   180     158   239.5
- *   200     182   270.4
- *                --------
- *                 1544.5  minimal total ink for all 10 real gaps
- * 1544.5 > MAX_INK (1450): starting ink alone is not enough. 2 pickups *
- * 260 = 520. 1450 + 520 = 1970 >= 1544.5, with 425.5px of slack (~27.5%)
- * over the theoretical minimum. Skipping either pickup leaves 1450+260=1710
- * >= 1544.5 (still technically beatable), but starting ink alone
- * (1450 < 1544.5) is not enough — pickups still matter.
- * Length: 7308 - 0 = 7308px.
+ * LEVEL 1 INK ARITHMETIC (MAX_INK = 2050, PICKUP_AMOUNT = 260)
+ *   gap  width   dy    ratio   cost
+ *    1     90   -60     0.67   108.2
+ *    2     95   -65     0.68   115.1
+ *    3    100   -65     0.65   119.3
+ *    4    105   -70     0.67   126.2
+ *    5    480     0      —     480.0
+ *    6    150   +70      —     165.5
+ *    7    160   +70      —     174.6
+ *    8    170   +60      —     180.3
+ *    9    180   +60      —     189.7
+ *                             -------
+ *                              1658.9
+ * Every climb ratio is at most 0.68, 39% of the measured 1.732 limit.
+ * Every drop is far past its ballistic floor: R(70) = 56.5 against 150 and
+ * 160 wide; R(60) = 52.3 against 170 and 180 wide — 94-128px of margin.
+ * Two spike fields at 319.4 each = 638.8:
+ *   1658.9 + 638.8 = 2297.7  minimal total ink
+ * 2297.7 > MAX_INK (2050): starting ink alone is not enough. 4 * 260 = 1040
+ * gives a budget of 3090, i.e. 792.3 of headroom (34% over the minimum).
+ * A realistic hand (15% longer lines, 20px overshoot each): 1.15*2297.7 +
+ * 11*20 = 2862.4, inside 3090 with 228 to spare.
+ * Length: 6640px. Elevation: 160 (plateau) .. 420 (baseline) = 260px.
  */
 
 // =========================================================================
-// LEVEL 2 — "The Sprint": tight rapid-fire small gaps.
+// LEVEL 2 — "The Towers": three towers climbed in two steep steps each,
+// with the ink on top and long flat ground in between.
 // =========================================================================
 //
-// 26 gaps, mostly flat with a handful of small climbs woven in at an
-// irregular rhythm (short flat buffer, long flat buffer, short, long...) so
-// the beats never settle into level 0's steady cadence or level 1's uniform
-// steps. Every gap is deliberately kept small, but never below the safety
-// floor found empirically (dy=0 needs >~27px; small climbs need a few px
-// more) — see the SAFETY note at the top of the file and level.test.ts.
+// Silhouette: a skyline. Three narrow high ledges (180, 165, 150 — the
+// highest ground in the campaign) rising off a low plain at 445, each
+// reached by two consecutive steep climbing gaps (ratio 1.14-1.23, roughly
+// 50 degrees: this is the level where a drawn line stops being a ramp and
+// becomes a cliff face), and left by walking down the tower's far shoulder
+// and bridging one wide drop back to the plain.
+//
+// The tower tops carry the ink. That is the level's whole risk argument:
+// the climb is two expensive diagonals and a big drop off the far side —
+// roughly 585 of ink per tower — and the pickup at the top is worth 260,
+// so the high line is not free money, it is the line that keeps you solvent
+// on a level that cannot be finished on its starting well. Between towers
+// the plain runs long and flat, with a short gap and (once) a 320px span to
+// keep the ink draining while nothing is happening vertically.
 function buildLevel2(): Level {
-  const HAZARD_EVERY = 2, HAZARD_START = 0;
   const startX = 0;
   const chaserStartX = -130;
 
-  const groundSegments: Segment[] = [
-    seg(chaserStartX - 300, GROUND_Y, 550, GROUND_Y),
-    seg(590, 420, 720, 420),
-    seg(764, 420, 824, 420),
-    seg(866, 406, 1036, 406),
-    seg(1082, 406, 1137, 406),
-    seg(1187, 406, 1377, 406), // pickup here
-    seg(1421, 388, 1496, 388),
-    seg(1550, 388, 1690, 388),
-    seg(1748, 388, 1808, 388),
-    seg(1856, 366, 2036, 366),
-    seg(2098, 366, 2168, 366),
-    seg(2234, 366, 2384, 366),
-    seg(2440, 340, 2520, 340),
-    seg(2590, 340, 2750, 340), // pickup here
-    seg(2824, 340, 2899, 340),
-    seg(2961, 310, 3151, 310),
-    seg(3229, 310, 3314, 310),
-    seg(3396, 310, 3566, 310),
-    seg(3634, 276, 3724, 276),
-    seg(3810, 276, 3990, 276), // pickup here
-    seg(4080, 276, 4175, 276),
-    seg(4251, 238, 4441, 238),
-    seg(4535, 238, 4635, 238),
-    seg(4733, 238, 4933, 238),
-    seg(5017, 196, 5122, 196),
-    seg(5224, 196, 5484, 196),
-    seg(5590, 196, 6190, 196),
+  const platforms: Node[][] = [
+    [pt(-730, 420), pt(240, 420), pt(540, 445), pt(700, 445)], // eases down onto the plain
+    // -- gap 1, 700..810 (110px, CLIMBS 125; ratio 1.14) --
+    [pt(810, 320), pt(1120, 320)], // tower 1, first ledge
+    // -- gap 2, 1120..1235 (115px, CLIMBS 140; ratio 1.22) --
+    [pt(1235, 180), pt(1565, 180), pt(1855, 320), pt(2005, 320)], // tower 1 top, then down its shoulder
+    // -- gap 3, 2005..2205 (200px, DROPS 125): off the shoulder --
+    [pt(2205, 445), pt(2705, 445)], // spike field at 2400
+    // -- gap 4, 2705..2805 (100px, flat) --
+    [pt(2805, 445), pt(3105, 445)],
+    // -- gap 5, 3105..3425 (320px, flat): the span across the plain --
+    [pt(3425, 445), pt(3685, 445)],
+    // -- gap 6, 3685..3797 (112px, CLIMBS 130; ratio 1.16) --
+    [pt(3797, 315), pt(4087, 315)], // tower 2, first ledge
+    // -- gap 7, 4087..4209 (122px, CLIMBS 150; ratio 1.23) --
+    [pt(4209, 165), pt(4549, 165), pt(4839, 315), pt(4989, 315)], // tower 2 top
+    // -- gap 8, 4989..5189 (200px, DROPS 130) --
+    [pt(5189, 445), pt(5689, 445)], // spike field at 5380
+    // -- gap 9, 5689..5839 (150px, flat) --
+    [pt(5839, 445), pt(6089, 445)],
+    // -- gap 10, 6089..6204 (115px, CLIMBS 135; ratio 1.17) --
+    [pt(6204, 310), pt(6494, 310)], // tower 3, first ledge
+    // -- gap 11, 6494..6624 (130px, CLIMBS 160; ratio 1.23): the steepest
+    //    line the campaign ever asks for, still 71% of the limit --
+    [pt(6624, 150), pt(6984, 150), pt(7274, 310), pt(7424, 310)], // tower 3 top, the campaign's high point
+    // -- gap 12, 7424..7629 (205px, DROPS 135) --
+    [pt(7629, 445), pt(7769, 445), pt(8049, 420), pt(8249, 420)], // back to baseline for the flag
   ];
 
-  const pickups: Pickup[] = [
-    pickup(1280, 406 - 18),
-    pickup(2670, 340 - 18),
-    pickup(3900, 276 - 18),
-  ];
-
-  const rolling = undulate(groundSegments);
   return {
-    groundSegments: rolling,
-    hazards: spikesOn(groundSegments, HAZARD_EVERY, HAZARD_START),
-    pickups: seatPickups(pickups, rolling, 18),
+    groundSegments: ground(platforms),
+    hazards: [spikes(2400, 445), spikes(5380, 445)],
+    pickups: [
+      pickup(940, 320), // tower 1, first ledge
+      pickup(1400, 180), // tower 1 top
+      pickup(2620, 445), // on the plain, before the short gap
+      pickup(3000, 445), // on the run-in to the 320px span
+      pickup(3900, 315), // tower 2, first ledge
+      pickup(4380, 165), // tower 2 top
+      pickup(5600, 445), // on the plain
+      pickup(6350, 310), // tower 3, first ledge
+      pickup(6800, 150), // tower 3 top: the highest ink in the campaign
+    ],
     startX,
     chaserStartX,
-    finishX: 6190,
+    finishX: 8200,
     index: 2,
     groundY: GROUND_Y,
     stub: null,
   };
 }
 /*
- * LEVEL 2 INK ARITHMETIC (MAX_INK = 1450, PICKUP_AMOUNT = 260)
- * 26 gaps, cost = hypot(width, |dy|) each. Every climb here is tiny
- * (steepest ratio 42/84 = 0.5, ~26.6 degrees) — nowhere near the
- * empirically measured 60-degree climb limit (see CLIMB LIMIT note at top):
- *   40, 44, 44.3, 46, 50, 47.5, 54, 58, 52.8, 62, 66, 61.7, 70, 74, 68.9,
- *   78, 82, 76.0, 86, 90, 85.0, 94, 98, 93.9, 102, 106
- * Sum = 1830.1  minimal total ink for all 26 real gaps.
- * 1830.1 > MAX_INK (1450). 3 pickups * 260 = 780. 1450 + 780 = 2230 >=
- * 1830.1, with 399.9px of slack (~21.8% over the theoretical minimum) —
- * the tightest margin of the four levels but still comfortably over the
- * 20% floor, fitting for a level whose challenge is volume and rationing
- * rather than any single hard read. Skipping even one pickup leaves
- * 1970 >= 1830.1 (still beatable), but starting ink alone (1450 < 1830.1)
- * is not enough — pickups still matter. Length: 6190 - 0 = 6190px.
+ * LEVEL 2 INK ARITHMETIC (MAX_INK = 2050, PICKUP_AMOUNT = 260)
+ *   gap  width   dy    ratio   cost
+ *    1    110  -125     1.14   166.4
+ *    2    115  -140     1.22   181.2
+ *    3    200  +125      —     235.8
+ *    4    100     0      —     100.0
+ *    5    320     0      —     320.0
+ *    6    112  -130     1.16   171.6
+ *    7    122  -150     1.23   193.3
+ *    8    200  +130      —     238.5
+ *    9    150     0      —     150.0
+ *   10    115  -135     1.17   177.4
+ *   11    130  -160     1.23   206.2
+ *   12    205  +135      —     245.5
+ *                             -------
+ *                              2385.9
+ * Climbs top out at 1.23 (71% of the 1.732 limit). Drops clear their
+ * ballistic floors by 123-127px: R(125) = 75.5 vs 200 wide, R(130) = 77.0
+ * vs 200, R(135) = 78.5 vs 205.
+ * Two spike fields at 319.4 = 638.8:
+ *   2385.9 + 638.8 = 3024.7  minimal total ink
+ * 3024.7 > MAX_INK (2050) by 974.7 — the largest shortfall in the campaign,
+ * which is why this level carries nine pickups and puts three of them on
+ * tower tops. 9 * 260 = 2340, budget 4390, headroom 1365.3 (45% over the
+ * minimum). A realistic hand: 1.15*3024.7 + 14*20 = 3758.4, inside 4390.
+ *
+ * That formula uses a straight edge-to-edge bridge; the real scripted-hand
+ * playthrough in level.test.ts draws a slightly longer line (aimed past
+ * both lips, per bridgeLine's OVERSHOOT) and THEN applies the 15% surcharge
+ * on top of that already-longer line, which compounds to a few px more per
+ * stroke than this formula estimates. At the original seven pickups that
+ * compounding was enough to run the level dry (verified by simulation, not
+ * just this arithmetic) — the two extra pickups here (tower 2's first
+ * ledge, tower 3's first ledge) closed exactly that gap and are sized from
+ * the real playthrough, not from this formula alone.
+ * Missing all three tower-top pickups leaves 2050 + 1560 = 3610 > 3024.7,
+ * so the low line is survivable on the theoretical minimum and nothing
+ * else: that is the intended squeeze, not an oversight.
+ * Length: 8200px. Elevation: 150 (tower 3) .. 445 (the plain) = 295px.
  */
 
 // =========================================================================
-// LEVEL 3 — "The Cliffs": big height swings. The finale.
+// LEVEL 3 — "The Cliffs": alternating deep drops and steep climbs, ending
+// on one long span. The finale.
 // =========================================================================
 //
-// 9 gaps alternating a big drop (dy>0, width sized well past the ballistic
-// safety floor for that drop) with a steep climb back up (dy<0). Both dy
-// magnitude and drop-gap width grow across the level, so the very last gap
-// is also the widest, most expensive single crossing in the campaign — the
-// "efficient single arc" finale the design calls for: by then most of the
-// ink budget is spent, and only a clean, near-minimal diagonal line still
-// fits.
+// Silhouette: a sawtooth, and the widest one in the campaign — 365px from
+// the pit floors (545, the lowest ground anywhere) to the last ledge (180).
+// Nine gaps alternate strictly: drop, climb, drop, climb... each swinging
+// 125-165px of height, with terrain ramps between them stealing back extra
+// altitude for free so the sawtooth climbs as it goes. Then everything
+// stops for gap 10: a 480px flat span at the baseline, the campaign's last
+// stroke, drawn on whatever ink is left.
 //
-// Integration testing found that the original climbs (46-52px wide for
-// 135-170px of rise, ratio ~3.0-3.3, ~72 degrees) were steeper than the
-// runner can actually climb — see the CLIMB LIMIT note at the top of this
-// file for the empirically measured 60-degree ceiling. The climbs below
-// are rebuilt at the SAME rises (character preserved: this is still the
-// level with the biggest height swings in the campaign) but widened so
-// their ratio sits around 1.12-1.15 (~48-49 degrees), roughly a third of
-// the way inside the 60-degree limit — steep enough to still read as a
-// cliff face, nowhere near the edge that broke. The drops are untouched:
-// a downhill line is never too steep to descend (gravity only pulls down),
-// so widening/flattening them was never necessary.
+// Both hazards sit at the bottom of pits, where the player has just landed
+// a downhill bridge and has the least room to think.
 function buildLevel3(): Level {
-  const HAZARD_EVERY = 3, HAZARD_START = 0;
   const startX = 0;
   const chaserStartX = -110;
 
-  const groundSegments: Segment[] = [
-    seg(chaserStartX - 300, GROUND_Y, 890, GROUND_Y), // pickup on this run-in
-    // -- gap, 890..1050 (160px, DROPS 105px) --
-    seg(1050, 525, 1510, 525),
-    // -- gap, 1510..1635 (125px, climbs 140px; ratio 1.12, ~48.2deg) --
-    seg(1635, 385, 2125, 385),
-    // -- gap, 2125..2298 (173px, DROPS 150px) --
-    seg(2298, 535, 2818, 535), // pickup on this run-in
-    // -- gap, 2818..2968 (150px, climbs 170px; ratio 1.13, ~48.6deg) --
-    seg(2968, 365, 3518, 365),
-    // -- gap, 3518..3697 (179px, DROPS 170px) --
-    seg(3697, 535, 4277, 535), // pickup on this run-in
-    // -- gap, 4277..4397 (120px, climbs 135px; ratio 1.13, ~48.4deg) --
-    seg(4397, 400, 5007, 400),
-    // -- gap, 5007..5182 (175px, DROPS 155px) --
-    seg(5182, 555, 5822, 555), // pickup on this run-in
-    // -- gap, 5822..5962 (140px, climbs 160px; ratio 1.14, ~48.8deg) --
-    seg(5962, 395, 6632, 395),
-    // -- gap, 6632..6818 (186px, DROPS 200px): the finale --
-    seg(6818, 595, 7238, 595),
+  const platforms: Node[][] = [
+    [pt(-710, 420), pt(700, 420)],
+    // -- gap 1, 700..850 (150px, DROPS 125): straight into the first pit --
+    [pt(850, 545), pt(1350, 545)], // pit floor: the lowest ground in the campaign
+    // -- gap 2, 1350..1480 (130px, CLIMBS 155; ratio 1.19) --
+    [pt(1480, 390), pt(1880, 390)],
+    // -- gap 3, 1880..2040 (160px, DROPS 130) --
+    [pt(2040, 520), pt(2480, 520)],
+    // -- gap 4, 2480..2600 (120px, CLIMBS 145; ratio 1.21) --
+    [pt(2600, 375), pt(2900, 375), pt(3190, 285), pt(3340, 285)], // free altitude: 90 over 290 (0.31)
+    // -- gap 5, 3340..3505 (165px, DROPS 140) --
+    [pt(3505, 425), pt(4005, 425)], // spike field at 3700
+    // -- gap 6, 4005..4130 (125px, CLIMBS 150; ratio 1.20) --
+    [pt(4130, 275), pt(4430, 275), pt(4720, 195), pt(4870, 195)], // free altitude: 80 over 290 (0.28)
+    // -- gap 7, 4870..5040 (170px, DROPS 150) --
+    [pt(5040, 345), pt(5540, 345)], // spike field at 5290
+    // -- gap 8, 5540..5675 (135px, CLIMBS 165; ratio 1.22): the last climb --
+    [pt(5675, 180), pt(6075, 180)], // the high ledge, and the ink on it
+    // -- gap 9, 6075..6250 (175px, DROPS 165): the deepest single fall --
+    [pt(6250, 345), pt(6650, 345), pt(6950, 420), pt(7150, 420)], // eases back to the baseline
+    // -- gap 10, 7150..7630 (480px, flat): the finale, on the ink you have
+    //    left --
+    [pt(7630, 420), pt(8050, 420)],
   ];
 
-  const pickups: Pickup[] = [
-    pickup(700, GROUND_Y - 18), // funds the first drop + climb
-    pickup(2758, 535 - 18), // funds the second climb (170px rise)
-    pickup(4217, 535 - 18), // funds the third climb (135px rise)
-    pickup(5762, 555 - 18), // funds the fourth climb (160px rise)
-  ];
-
-  const rolling = undulate(groundSegments);
   return {
-    groundSegments: rolling,
-    hazards: spikesOn(groundSegments, HAZARD_EVERY, HAZARD_START),
-    pickups: seatPickups(pickups, rolling, 18),
+    groundSegments: ground(platforms),
+    hazards: [spikes(3700, 425), spikes(5290, 345)],
+    pickups: [
+      pickup(1050, 545), // the first pit floor, before the first climb
+      pickup(1700, 390), // after the first climb
+      pickup(2200, 520), // on the run-in to the second pit's far wall
+      pickup(2350, 520), // at the bottom of the second pit
+      pickup(3250, 285), // top of the first free-altitude ramp
+      pickup(4790, 195), // top of the second, the riskiest line on the level
+      pickup(5350, 345),
+      pickup(5900, 180), // the high ledge: funds the finale
+      pickup(7050, 420), // the last well before the 480px span
+    ],
     startX,
     chaserStartX,
-    finishX: 7238,
+    finishX: 8010,
     index: 3,
     groundY: GROUND_Y,
     stub: null,
   };
 }
 /*
- * LEVEL 3 INK ARITHMETIC (MAX_INK = 1450, PICKUP_AMOUNT = 260)
- * cost = hypot(width, |dy|) per gap. Every climb ratio is checked against
- * the empirically measured 60-degree (ratio 1.732) climb limit at the top
- * of the file — all four sit at ~48-49 degrees, comfortably inside it:
- *   width  dy    ratio   cost
- *    160   105   0.66   191.4
- *    125  -140   1.12   187.7
- *    173   150   0.87   229.0
- *    150  -170   1.13   226.7
- *    179   170   0.95   246.9
- *    120  -135   1.13   180.6
- *    175   155   0.89   233.8
- *    140  -160   1.14   212.6
- *    186   200   1.08   273.1
- *                       -------
- *                       1981.7  minimal total ink for all 9 real gaps
- * 1981.7 > MAX_INK (1450): starting ink alone is not enough. 4 pickups *
- * 260 = 1040. 1450 + 1040 = 2490 >= 1981.7, with 508.3px of slack (~25.7%
- * over the theoretical minimum) — comfortably over the 20% floor, unlike
- * the old (pre-fix) geometry which left only ~6% and also happened to be
- * uncrossable regardless of ink. Skipping one pickup leaves 2230 >= 1981.7
- * (still beatable); skipping two leaves 1970 < 1981.7 (not enough) — most
- * of the four are genuinely required. The finale gap alone (273.1) is
- * still nearly a seventh of the whole level's budget — by the time the
- * player reaches it, the remaining ink margin is thin enough that only a
- * disciplined, near-diagonal stroke still fits, the "single efficient arc"
- * the brief asks the campaign to end on.
- * Length: 7238 - 0 = 7238px.
+ * LEVEL 3 INK ARITHMETIC (MAX_INK = 2050, PICKUP_AMOUNT = 260)
+ *   gap  width   dy    ratio   cost
+ *    1    150  +125      —     195.3
+ *    2    130  -155     1.19   202.3
+ *    3    160  +130      —     206.2
+ *    4    120  -145     1.21   188.2
+ *    5    165  +140      —     216.4
+ *    6    125  -150     1.20   195.3
+ *    7    170  +150      —     226.7
+ *    8    135  -165     1.22   213.2
+ *    9    175  +165      —     240.5
+ *   10    480     0      —     480.0
+ *                             -------
+ *                              2364.1
+ * Drops vs their ballistic floors: R(125)=75.5 vs 150, R(130)=77.0 vs 160,
+ * R(140)=79.9 vs 165, R(150)=82.7 vs 170, R(165)=86.8 vs 175 — 74-88px of
+ * margin on every one, the tightest in the campaign and still comfortably
+ * past the empirically verified floor. Climbs peak at 1.22 (70% of limit).
+ * Two spike fields at 319.4 = 638.8:
+ *   2364.1 + 638.8 = 3002.9  minimal total ink
+ * 3002.9 > MAX_INK (2050). 9 * 260 = 2340, budget 4390, headroom 1387.1
+ * (46% over the minimum). A realistic hand: 1.15*3002.9 + 12*20 = 3693.3,
+ * inside 4390.
  *
- * Every dy>0 (downhill) width here was chosen well above the ballistic
- * safety floor R(dy) (see SAFETY note at top) with margin to spare, and
- * every dy<0 (uphill) pair was chosen well inside the climb limit (see
- * CLIMB LIMIT note at top) with margin to spare — both confirmed by direct
- * simulation in level.test.ts.
+ * As in level 2, that formula understates the real scripted-hand cost: the
+ * playthrough draws a longer aimed-past-both-lips line (bridgeLine's
+ * OVERSHOOT) and charges the 15% surcharge on top of that longer line,
+ * which compounds beyond this formula by a few px per stroke — enough,
+ * across nine strokes on the level with the thinnest original margin, to
+ * run dry twice over by simulation (first at the second pit, then again
+ * past the second free-altitude ramp once the first shortfall was
+ * covered). The two extra pickups here (the first pit floor, the run-in to
+ * the second pit's far wall) were placed and sized from that simulation,
+ * not from the formula.
+ * Length: 8010px. Elevation: 180 (high ledge) .. 545 (pit floor) = 365px,
+ * the widest in the campaign and the full authored relief window.
  */
 
 const BUILDERS: readonly (() => Level)[] = [buildLevel0, buildLevel1, buildLevel2, buildLevel3];
