@@ -6,6 +6,7 @@ import { resolveMovement, segmentsFromPolyline } from "./geometry";
 import { inkCost } from "./ink";
 import { buildLevel } from "./level";
 import {
+  STRIDE_PX,
   CHASER_WALKABLE_SLOPE,
   SPIKE_HEIGHT,
   STALL_PROGRESS_EPS,
@@ -136,6 +137,9 @@ export function createState(levelIndex: number): GameState {
     progressX: level.startX,
     chaserProgressX: chaser.pos.x,
     chaserStuckFor: 0,
+    runPhase: 0,
+    chaserPhase: 0.5,
+    ghostPhase: 0.17,
     level,
     elapsed: 0,
   };
@@ -259,6 +263,14 @@ export function step(state: GameState, dt: number, chaserDt: number = dt): void 
   }
 
   stepGhost(state, dt, floor);
+  // Gait phases advance on ground covered, not on the clock.
+  const wrap = (v: number): number => ((v % 1) + 1) % 1;
+  state.runPhase = wrap(state.runPhase + (state.runner.vel.x * dt) / STRIDE_PX);
+  state.chaserPhase = wrap(state.chaserPhase + (state.chaser.vel.x * chaserDt) / STRIDE_PX);
+  if (state.ghost) {
+    state.ghostPhase = wrap(state.ghostPhase + (state.ghost.vel.x * dt) / STRIDE_PX);
+  }
+
   collectPickups(state);
 
   const dx = state.runner.pos.x - state.chaser.pos.x;

@@ -159,3 +159,9 @@ export const SPIKE_HEIGHT = 30;
  *  behind you from penning it. It still walks every ramp and bridge you draw,
  *  so it genuinely follows your route. */
 export const CHASER_WALKABLE_SLOPE = 1.43;
+
+/** World px covered by one full gait cycle (two steps). Phase advances by
+ *  distance travelled over this, so a figure slowed by a climb takes shorter
+ *  strides instead of skating, and slow motion slows the legs automatically
+ *  because less ground passes underneath them. */
+export const STRIDE_PX = 168;

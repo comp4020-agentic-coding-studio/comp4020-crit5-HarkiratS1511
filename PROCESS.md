@@ -1,70 +1,121 @@
 # Process overview
 
-<!-- TEMPLATE: this file is a shape to fill in, not a form. Replace everything
-     in it with your own overview, and delete this comment — `pnpm
-     check:evidence` will remind you if it's still here. -->
-
-A reading-guide to how the work came together --- a map to your process, not an
-essay about it. Markers read this file and follow its citations; they don't
-trawl the repo for evidence you didn't point at, so if a moment mattered, cite
-it.
-
-This file is the shape; the course site's
-[assessment page](https://comp.anu.edu.au/courses/comp4020-agentic-coding-studio/topics/assessment/#what-you-submit)
-is the requirement, and its
-[word counts](https://comp.anu.edu.au/courses/comp4020-agentic-coding-studio/topics/assessment/#word-counts)
-cover every deliverable.
+This is a reading guide to how the week went, not an essay about it. Each
+moment below cites the commit that carries the evidence.
 
 ## What I built
 
-One paragraph: the thing, and the idea behind it.
+**Ink** is a side-on auto-runner: the runner sprints on its own, and the only
+thing the player controls is a finite ink bar they spend drawing lines —
+bridges over gaps, ramps over spike fields — while a chaser closes in behind
+them if they draw badly or too slowly. The brief forbids any instructions
+anywhere on screen, so every rule the player needs has to be taught by what
+they see happen, never by a word.
 
 ## The moments that mattered
 
-Three or four for an assignment; fewer is fine for a weekly prototype. Keep the
-list short so each moment has room to do all four jobs:
+### The breakthrough was pace
 
-1. **what happened** --- the problem, or the thing that went wrong
-2. **what you did instead of the obvious thing** --- the call you made, and why
-   it beat the obvious one
-3. **how you knew it was right** --- the check you ran, the viewport you looked
-   at, what you read before accepting the diff
-4. **the citation** --- a commit or commit range, a `CLAUDE.md` change, a check
-   that went from red to green, a prompt paired with the commit it produced
+Three things looked like three unrelated defects: gaps you could cross
+downhill with no ink spent at all, a chaser that was either a rumour or an
+instant kill with nothing in between, and a slow-motion mechanic that did
+nothing you could feel. All three turned out to be downstream of one tuning
+constant. `RUN_SPEED` dropping from 260px/s to 185px/s in
+[`47fb5ea`](https://github.com/comp4020-agentic-coding-studio/comp4020-crit5-HarkiratS1511/commit/47fb5ea)
+shortened the runner's ballistic arc off every ledge (closing the free
+downhill crossings), opened enough distance between "safely ahead" and
+"caught" for a chaser to actually occupy a band in the middle, and finally
+left spare frame budget for slow motion to register as a decision rather than
+noise. Chasing each symptom individually — widen the gaps, retune the chaser
+again, deepen the dilation again — would have papered over all three without
+ever finding the shared cause.
 
-Jobs 2 and 3 are the ones the repo can't tell a reader on its own, so they're
-where the marks are. The strongest moments are the ones where a correction
-landed in the **harness** --- the standards and checks your work has to satisfy
---- rather than in a retry: a rule added to `CLAUDE.md`, a check wired up, an
-attempt thrown away. Retrying until it passes is the routine case, and changing
-what the work runs against is the skilled one.
+### A green suite proved nothing
 
-Cite each moment as a link whose text is the commit hash or range and whose
-target is this repo's commit or compare URL, so a reader clicks straight to the
-evidence:
+JSDOM cannot see a canvas, so the test suite stayed fully green through three
+separate bugs that made the built game unplayable: a portrait-scaled sightline
+that showed two thirds of empty sky on the phone viewport and a chaser that
+could never catch anyone
+([`58e10f2`](https://github.com/comp4020-agentic-coding-studio/comp4020-crit5-HarkiratS1511/commit/58e10f2)),
+a camera with no y-anchor that floated the ground at a different height on
+each screen size
+([`735768b`](https://github.com/comp4020-agentic-coding-studio/comp4020-crit5-HarkiratS1511/commit/735768b)),
+and a hand-drawn stroke whose upward wobble presented a near-vertical face
+that froze the runner in place for three real seconds while the chaser closed
+in
+([`377f7f4`](https://github.com/comp4020-agentic-coding-studio/comp4020-crit5-HarkiratS1511/commit/377f7f4)).
+None of these were found by a test; all three were found by driving the built
+game in a real browser and watching it. That produced two lasting sensors
+rather than one-off fixes: an automated playthrough driver
+(`scripts/playthrough.mjs`, added in `377f7f4`) that drives real Pointer
+Events through the simulation, and a headless-Chromium viewport check
+(`spec/viewport.sensor.test.ts`, added in `58e10f2`) that serves the build
+under the real GitHub Pages base path and asserts no overflow, no console
+errors, and no failed requests. Per `spec/README.md` these are harness, not
+contract tests answering this week's brief — they carry into next week's repo
+the same way a `CLAUDE.md` rule does.
 
-- one commit: [`a1b2c3d`](https://github.com/YOUR-ORG/YOUR-REPO/commit/a1b2c3d)
-- a range:
-  [`a1b2c3d...e4f5a6b`](https://github.com/YOUR-ORG/YOUR-REPO/compare/a1b2c3d...e4f5a6b)
+### Bugs that took several attempts, each one measured
 
-To pair a prompt with the commit it produced, quote the prompt (curated, not a
-full transcript) next to the citation:
+- **Chaser balance** took three attempts, not one. It started inert —
+  [`58e10f2`](https://github.com/comp4020-agentic-coding-studio/comp4020-crit5-HarkiratS1511/commit/58e10f2)
+  records it finishing a level 1026px behind because slow motion dilated it
+  along with the runner, so drawing cost nothing relative to it. Putting it on
+  real time overshot the other way: at 232px/s the survivable drawing window
+  measured half a second per gap, and playtesters died with a nearly full ink
+  bar because the chaser had become the only mechanic. The version that
+  shipped, in
+  [`47fb5ea`](https://github.com/comp4020-agentic-coding-studio/comp4020-crit5-HarkiratS1511/commit/47fb5ea),
+  gives the chaser its own shallower slow-motion dilation and holds it to a
+  band behind the runner, so it is visible without being a death sentence —
+  each version was retuned off a measured playthrough number, not a guess.
+- **Stuck detection** failed twice before the third version worked, for the
+  same underlying reason both times: a runner pinned against too-steep a line
+  bounces rather than sitting still. The first version only watched a
+  grounded runner and missed the commonest failure, a line too steep to climb
+  that pins the runner airborne. The second compared frame to frame, and the
+  bouncing kept resetting its own clock so it never tripped. The version that
+  shipped in `47fb5ea` measures a watermark of furthest-x-reached instead,
+  which doesn't care how the runner is failing to progress, only that it
+  isn't.
+- **The walling exploit** — a vertical stroke drawn behind the player
+  permanently penned the chaser, leaving the rest of the course free to walk —
+  took two attempts to close. The first fix,
+  [`8db108e`](https://github.com/comp4020-agentic-coding-studio/comp4020-crit5-HarkiratS1511/commit/8db108e),
+  gave the chaser patience: blocked long enough, it ignores ink and walks
+  through. That only delayed the pen, since a still-patient chaser could be
+  penned again for the timer's full duration. The real fix,
+  [`d08babf`](https://github.com/comp4020-agentic-coding-studio/comp4020-crit5-HarkiratS1511/commit/d08babf),
+  changes what counts as an obstacle at all: the chaser now treats a drawn
+  segment as solid only when it's shallow enough to walk on, so a vertical
+  stroke simply isn't a wall to it, verified against vertical, near-vertical,
+  70-degree and 40-degree strokes.
 
-> the prompt, verbatim
+### A level shipped provably impossible gaps
 
-Screenshots are welcome where one carries the verification better than a
-sentence does. Commit the file to this repo and link it with a **relative**
-path, which is what makes it render on GitHub: `![alt text](docs/before.png)`.
-Images don't count towards the word count and don't replace the citation.
+Every gap test up to that point proved a gap couldn't be crossed for free —
+never that it could be crossed at all. Level 3 had shipped a 46px-wide gap
+rising 140px, a 72-degree wall no runner could mount, and nothing in the
+suite caught it because the suite only ever checked one direction of the
+claim. The fix in
+[`47fb5ea`](https://github.com/comp4020-agentic-coding-studio/comp4020-crit5-HarkiratS1511/commit/47fb5ea)
+measures the runner's actual climbable limit against the physics — about 60
+degrees — and re-measures it at test time rather than hardcoding the number,
+so every gap in every level is now proven both ways: not free without ink,
+and actually climbable with it. That measurement can't go stale if the pace
+constant above ever moves again.
 
-## Before you ship
+### Directing agents — the lesson worth keeping
 
-`pnpm check:evidence` verifies your citations resolve to real commits, that a
-reflection entry the marker reads is in `reflections/`, and that your
-`CLAUDE.md` is there --- before a marker ever opens the file. It checks that
-your map is traceable, not that it is good: the marker judges whether your
-small, deliberately chosen set of moments shows real judgement and reflection. A
-green check is not a substitute for that curation.
-
-Images aren't checked: unlike a citation whose SHA doesn't resolve, a broken
-image is visible the moment this file is rendered on GitHub.
+`47fb5ea` lands four largely independent modules in one pass — figures, hud,
+scenery, and a reworked level — and they composed with zero signature drift
+because the contracts between them were settled and fixed before any agent
+was set loose on the implementation. That ordering mattered more than any
+individual prompt: three separate agents this week stalled out or timed out,
+having written nothing, when asked to rewrite a large file wholesale, and
+every one of them succeeded once the same piece of work was re-scoped as
+targeted edits to specific functions inside a file whose interface didn't
+move. That's not an anecdote about one stuck agent — it's a reusable rule for
+how to hand this kind of work off at all: fix the seams first, then never ask
+an agent to hold a whole file's shape in its head when it only needs to
+change a function's insides.

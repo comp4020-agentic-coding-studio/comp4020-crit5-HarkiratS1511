@@ -1,778 +1,254 @@
-// Articulated human silhouettes for the runner, the chaser and the ghost.
+// Procedural stick-figure rendering. Rendering only — this module never reads
+// or writes physics state beyond the read-only bodies handed to it.
 //
-// The brief from the playtest was blunt: the old figures were crude sticks.
-// The target is Vector (2012): a smooth black silhouette of a real body,
-// running and jumping with weight and momentum. So instead of drawing a
-// handful of straight strokes per frame, this module builds an actual
-// skeleton — hip, knee, ankle, shoulder, elbow, wrist, neck, head — and fills
-// tapered capsule links between the joints. Every joint angle is a pure
-// function of time (or of physical state, for the airborne poses), so the
-// whole file is deterministic and side-effect free: read the entity, compute
-// angles, draw, restore.
+// The rig is a skeleton, not a set of stamped poses: a hip, a torso up to a
+// shoulder, a head, and four two-bone limbs solved by inverse kinematics from
+// a target. Feet follow an ellipse that is wider than it is tall, centred
+// slightly ahead of the hip, with the ground half FLATTENED so a planted foot
+// tracks level instead of curving through the floor — that flattening is what
+// separates a run from a scissoring pair of sticks.
 //
-// POSE SYSTEM, in one pass:
-//
-// 1. Gait timing. `gaitFrequency` turns a travel speed and a chosen stride
-//    length into a cadence (cycles/sec); `gaitPhase` turns elapsed time into
-//    a phase in [0, 2*PI). Tying frequency to RUN_SPEED / CHASER_SPEED is
-//    what stops the feet skating: see (2).
-//
-// 2. Foot placement, not joint angles. A naive run cycle animates hip/knee
-//    angles directly and the planted foot visibly slides along the ground,
-//    because nothing ties the swing of the leg to how far the body actually
-//    travels while that foot is down. Instead `legFootOffset` computes the
-//    foot's target position relative to the hip: during the stance half of
-//    the cycle the foot sweeps backward (relative to the hip) at exactly the
-//    rate the hip itself is sweeping forward through the world, so the two
-//    cancel and the foot's world position is constant while it's grounded —
-//    the geometric definition of "planted". During the swing half it arcs
-//    forward through the air with a lift profile. `twoBoneIK` then solves the
-//    thigh/shin angles that reach that target, via the standard law-of-
-//    cosines two-bone solver, clamped so it is always finite.
-//
-// 3. Everything else (arm swing, elbow bend, body bob, torso counter-
-//    rotation) is a small periodic function of the same phase, combined with
-//    contralateral pairing (each arm takes the opposite leg's phase, as in a
-//    real gait) so hips and shoulders visibly counter-rotate.
-//
-// 4. Grounded figures keep their legs in a world-aligned frame (so feet land
-//    exactly at the bottom of the collision circle regardless of the body's
-//    lean) while the torso, neck, head and arms pivot forward from the hip —
-//    a runner's legs work against the ground; their upper body leans into
-//    the run. Airborne figures abandon foot-planting entirely and blend
-//    between a tucked "rising" silhouette and a reaching "falling" one,
-//    driven continuously by vel.y so the grounded/airborne cut is a smooth
-//    read rather than a snap between two frozen poses.
-//
-// 5. The chaser reuses the identical rig with different knobs: bigger,
-//    heavier (larger height and width multipliers), lower and more forward-
-//    pitched (a crouched hip fraction and a steeper lean), longer reaching
-//    arms (an arm-length multiplier and a straighter elbow), and a faster,
-//    ragged gait (a shorter stride length for a higher cadence, plus small
-//    odd-harmonic jitter on the legs and torso so its cycle never looks as
-//    clean as the runner's).
-//
-// 6. The ghost draws the same rig, ghosted (low, uniform alpha with a faint
-//    stroked outline on every link). Once it is falling out of the world
-//    (`goneFor > 0`) it switches to a tumbling pose: a whole-body rotation
-//    (legs included, unlike the grounded gait) driven by goneFor, with limbs
-//    flailing at a fast, uncoordinated frequency instead of the clean gait —
-//    deliberately NOT a run cycle, so it reads as a loss of control — fading
-//    out over GHOST_FADE_SECONDS.
+// Phase is supplied by the caller and advances on distance travelled (see
+// STRIDE_PX), so the legs keep pace with the ground and slow motion slows the
+// stride without anything here knowing about time at all.
 
-import type { Runner, Chaser, Ghost, Vec2 } from "./types";
-import { RUNNER_RADIUS, CHASER_RADIUS, RUN_SPEED, CHASER_SPEED } from "./tuning";
+import type { Chaser, Ghost, Runner, Vec2 } from "./types";
+
+// --- tuning: limb lengths and the foot ellipse ------------------------------
+export const THIGH = 15;
+export const SHIN = 15;
+export const UPPER_ARM = 11;
+export const FOREARM = 11;
+export const TORSO = 20;
+export const NECK = 4;
+export const HEAD_R = 5.4;
+
+/** Foot ellipse: wider than tall, centred a little ahead of the hip. */
+export const STEP_W = 41;
+export const STEP_H = 13;
+export const STEP_AHEAD = 3;
+
+/** How far the hip sits above the feet when standing. */
+export const HIP_HEIGHT = 27;
 
 const INK = "#1a1a2e";
 
-// ---------------------------------------------------------------------------
-// Small math helpers.
-// ---------------------------------------------------------------------------
-
 function clamp(v: number, lo: number, hi: number): number {
-  return Math.min(hi, Math.max(lo, v));
+  return v < lo ? lo : v > hi ? hi : v;
 }
 
-function lerp(a: number, b: number, t: number): number {
-  return a + (b - a) * t;
-}
-
-// ---------------------------------------------------------------------------
-// Pure pose helpers. Exported so the pose system itself — not just "does
-// drawing throw" — is unit tested: periodic in phase, finite for any input.
-// ---------------------------------------------------------------------------
-
-/** Cadence, in cycles/sec, for a body covering ground at `speed` px/s while
- *  one full gait cycle spans `strideLength` px of travel. This is the one
- *  place RUN_SPEED / CHASER_SPEED feed the animation, which is what keeps
- *  the stance foot's math (see legFootOffset) consistent with how fast the
- *  body is actually moving — the mechanism that prevents visible foot skate. */
-export function gaitFrequency(speed: number, strideLength: number): number {
-  const len = Math.max(1e-3, Math.abs(strideLength));
-  return Math.abs(speed) / len;
-}
-
-/** Elapsed time -> phase in [0, 2*PI). Periodic in `t` with period
- *  1/frequency, by construction (modulo wrap of a linear ramp). */
-export function gaitPhase(t: number, frequency: number): number {
-  const twoPi = Math.PI * 2;
-  const raw = t * frequency * twoPi;
-  const wrapped = raw % twoPi;
-  return wrapped < 0 ? wrapped + twoPi : wrapped;
-}
-
-/**
- * Foot position relative to the hip, in a world-aligned frame (x: forward
- * offset, y: downward offset), for one leg at the given phase.
+/** Foot offset from the hip at gait `phase`, in local (facing +x) space.
  *
- * Phase in [0, PI): stance. The foot sweeps from +stepHalf to -stepHalf at a
- * CONSTANT rate over half the cycle. Because the hip itself advances through
- * the world at the body's travel speed, and gaitFrequency was chosen so that
- * one full stride (4*stepHalf of hip travel) takes exactly one gait period,
- * the foot's rate of travel relative to the hip during stance exactly
- * cancels the hip's rate of travel through the world — the foot's WORLD
- * position holds still while planted. That is the whole trick against
- * skating; RUN_SPEED/CHASER_SPEED feed it via gaitFrequency above.
- *
- * Phase in [PI, 2*PI): swing. The foot eases (smoothstep) from -stepHalf
- * back to +stepHalf while lifting off the ground line by up to liftHeight,
- * peaking at mid-swing.
- */
-export function legFootOffset(phase: number, stepHalf: number, liftHeight: number): Vec2 {
-  const twoPi = Math.PI * 2;
-  const p = ((phase % twoPi) + twoPi) % twoPi;
-  if (p < Math.PI) {
-    const s = p / Math.PI; // 0..1 across stance
-    return { x: stepHalf * (1 - 2 * s), y: 0 };
-  }
-  const s = (p - Math.PI) / Math.PI; // 0..1 across swing
-  const smooth = s * s * (3 - 2 * s); // smoothstep: eases in/out of the plant
-  return { x: -stepHalf + 2 * stepHalf * smooth, y: -liftHeight * Math.sin(Math.PI * s) };
+ *  Bottom half of the cycle is stance: the foot holds at ground level and
+ *  sweeps backward, which is what makes it appear planted while the body
+ *  moves over it. Top half is swing: it lifts and travels forward. */
+export function footOffset(phase: number): Vec2 {
+  const a = phase * Math.PI * 2;
+  const x = STEP_AHEAD + (STEP_W / 2) * Math.cos(a);
+  const s = Math.sin(a);
+  // +y is down. Stance (s >= 0) holds the foot flat on the floor; swing lifts
+  // it from exactly that height, so the two halves meet without a step.
+  //
+  // The obvious formula — HIP + (STEP_H / 2) * s — is wrong and was caught by
+  // the continuity test: it returns HIP at the handover, not the floor, so the
+  // foot popped half a step-height into the air once per stride.
+  const floor = HIP_HEIGHT + STEP_H / 2;
+  const y = s >= 0 ? floor : floor + STEP_H * s;
+  return { x, y };
 }
 
-/**
- * Two-bone IK: given a target relative to the hip and two link lengths,
- * returns the knee position and the thigh's angle from straight-down
- * (positive = swung toward the target's +x side). Standard law-of-cosines
- * solve; every intermediate value is clamped so the result is always
- * finite, even for a target beyond reach or almost on top of the hip.
- */
-export function twoBoneIK(target: Vec2, l1: number, l2: number): { knee: Vec2; thighAngle: number } {
-  const len1 = Math.max(1e-3, l1);
-  const len2 = Math.max(1e-3, l2);
-  const rawD = Math.hypot(target.x, target.y);
-  const maxD = Math.max(1e-3, len1 + len2 - 1e-3);
-  const d = clamp(rawD, 1e-3, maxD);
-  const angleToTarget = Math.atan2(target.x, target.y); // 0 = straight down
-  const cosHipOffset = clamp((len1 * len1 + d * d - len2 * len2) / (2 * len1 * d), -1, 1);
-  const hipOffset = Math.acos(cosHipOffset);
-  const thighAngle = angleToTarget - hipOffset;
-  return { knee: { x: len1 * Math.sin(thighAngle), y: len1 * Math.cos(thighAngle) }, thighAngle };
+/** Two-bone IK. Returns the joint between `from` and `target`, bent to the
+ *  side given by `bend`. If the target is out of reach the limb is left
+ *  straight and pointed at it rather than allowed to break. */
+export function solveJoint(
+  from: Vec2,
+  target: Vec2,
+  l1: number,
+  l2: number,
+  bend: number,
+): Vec2 {
+  const dx = target.x - from.x;
+  const dy = target.y - from.y;
+  const d = Math.hypot(dx, dy);
+  if (d < 1e-6) return { x: from.x + l1, y: from.y };
+
+  const reach = clamp(d, Math.abs(l1 - l2) + 1e-3, l1 + l2 - 1e-3);
+  const ux = dx / d;
+  const uy = dy / d;
+  const a = (l1 * l1 - l2 * l2 + reach * reach) / (2 * reach);
+  const h = Math.sqrt(Math.max(0, l1 * l1 - a * a));
+  return {
+    x: from.x + ux * a - uy * h * bend,
+    y: from.y + uy * a + ux * h * bend,
+  };
 }
 
-/** Shoulder swing angle from straight-down, driven by the SAME phase family
- *  as the legs but assigned contralaterally by the caller (each arm gets the
- *  opposite leg's phase), which is what makes hips and shoulders visibly
- *  counter-rotate. */
-export function armSwingAngle(phase: number, amplitude: number): number {
-  return amplitude * Math.sin(phase);
+type Rig = {
+  /** Overall size multiplier against the constants above. */
+  size: number;
+  /** Forward pitch of the torso, radians. */
+  lean: number;
+  /** Stroke weight multiplier. */
+  weight: number;
+  /** Extra ragged-ness in the gait: 0 for the runner, higher for the chaser. */
+  ragged: number;
+};
+
+const RUNNER_RIG: Rig = { size: 1, lean: 0.26, weight: 1, ragged: 0 };
+const CHASER_RIG: Rig = { size: 1.24, lean: 0.46, weight: 1.5, ragged: 1 };
+
+function bone(ctx: CanvasRenderingContext2D, a: Vec2, b: Vec2, w: number): void {
+  ctx.lineWidth = w;
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y);
+  ctx.lineTo(b.x, b.y);
+  ctx.stroke();
 }
 
-/** Elbow flexion added on top of the shoulder angle: near-straight when the
- *  arm swings forward, most bent as it swings back through the body. */
-export function elbowBendAngle(phase: number, base: number, amplitude: number): number {
-  return base + amplitude * (0.5 + 0.5 * Math.sin(phase - Math.PI / 2));
-}
-
-/** Vertical bob of the whole body, twice per gait cycle (once per foot
- *  strike), always >= 0 so it reads as "settling" rather than sinking below
- *  the nominal stand height. */
-export function bodyBobOffset(phase: number, amplitude: number): number {
-  return (amplitude * (1 - Math.cos(2 * phase))) / 2;
-}
-
-/** Small torso rotation counter to the hip swing — the visible "twist" half
- *  of hip/shoulder counter-rotation in a 2D side view. */
-export function torsoCounterRotation(phase: number, amplitude: number): number {
-  return amplitude * Math.sin(phase);
-}
-
-/** Layered low-frequency drift. The periods are mutually irrational, so the
- *  sum never repeats, while staying a pure function of t (the renderer may be
- *  called twice for the same t and must produce the same frame). */
-export function driftAt(t: number, seed: number): number {
-  return (
-    Math.sin(t * 0.31 + seed) * 0.6 +
-    Math.sin(t * 0.137 + seed * 2.3) * 0.3 +
-    Math.sin(t * 0.0723 + seed * 5.1) * 0.1
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Drawing primitives.
-// ---------------------------------------------------------------------------
-
-/** A single tapered, rounded limb link: a filled trapezoid between two
- *  joints, thick at width w1 and thin at width w2, with the joints rounded
- *  off by filled circles so consecutive links (thigh->shin, upper arm-
- *  >forearm) read as one continuous rounded limb rather than a faceted
- *  plank — the "smooth silhouette" the brief asks for instead of uniform
- *  stick lines. */
-function drawTaperedLink(
+/** Draw the skeleton in local space: hip at the origin, facing +x. */
+function drawSkeleton(
   ctx: CanvasRenderingContext2D,
-  x1: number,
-  y1: number,
-  w1: number,
-  x2: number,
-  y2: number,
-  w2: number,
-  strokeAlso: boolean
+  phase: number,
+  rig: Rig,
+  airborne: number,
+  vy: number,
 ): void {
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-  const len = Math.hypot(dx, dy) || 1e-6;
-  const nx = -dy / len;
-  const ny = dx / len;
+  const k = rig.size;
+  const hip: Vec2 = { x: 0, y: 0 };
 
-  ctx.beginPath();
-  ctx.moveTo(x1 + nx * w1, y1 + ny * w1);
-  ctx.lineTo(x2 + nx * w2, y2 + ny * w2);
-  ctx.lineTo(x2 - nx * w2, y2 - ny * w2);
-  ctx.lineTo(x1 - nx * w1, y1 - ny * w1);
-  ctx.closePath();
-  ctx.fill();
-  if (strokeAlso) ctx.stroke();
+  // Ragged figures break the symmetry of their stride slightly.
+  const jitter = rig.ragged
+    ? Math.sin(phase * Math.PI * 6) * 0.06 * rig.ragged
+    : 0;
 
-  ctx.beginPath();
-  ctx.arc(x1, y1, w1, 0, Math.PI * 2);
-  ctx.fill();
-  if (strokeAlso) ctx.stroke();
+  const shoulder: Vec2 = {
+    x: hip.x + Math.sin(rig.lean) * TORSO * k,
+    y: hip.y - Math.cos(rig.lean) * TORSO * k,
+  };
 
-  ctx.beginPath();
-  ctx.arc(x2, y2, w2, 0, Math.PI * 2);
-  ctx.fill();
-  if (strokeAlso) ctx.stroke();
-}
-
-/** Everything needed to pose and draw one figure. Callers (drawRunner /
- *  drawChaser / drawGhost) are responsible for turning entity state + t into
- *  these numbers; this function only lays out and fills the body. */
-interface FigureParams {
-  cx: number;
-  cy: number;
-  radius: number;
-  facing: 1 | -1;
-  /** Total standing height, feet to crown, in world px (~4-5x radius). */
-  H: number;
-  /** Hip height as a fraction of H — lower = a crouched, predatory stance. */
-  hipFrac: number;
-  /** Overall girth multiplier applied to every limb/torso width. */
-  widthMult: number;
-  /** Multiplier on arm segment lengths (the chaser reaches further). */
-  armLenMult: number;
-  /** Forward tilt applied to the torso/head/arm group only. */
-  lean: number;
-  /** Extra rotation applied to the ENTIRE figure (legs included) around the
-   *  hip — zero for a normal grounded gait (legs stay world-aligned so feet
-   *  land where physics expects), nonzero for the ghost's tumble. */
-  bodyRotation: number;
-  /** Foot targets relative to the hip, in a WORLD-ALIGNED (unrotated, but
-   *  already facing-adjusted) frame: x forward, y downward. */
-  legTargets: [Vec2, Vec2];
-  /** Shoulder swing angle per arm (unsigned; facing is applied here). */
-  armAngles: [number, number];
-  /** Elbow flexion added on top of each shoulder angle. */
-  elbowBends: [number, number];
-  alpha: number;
-  /** Ghost mode: also stroke a faint outline on every filled link. */
-  strokeAlso?: boolean;
-}
-
-function drawArticulatedFigure(ctx: CanvasRenderingContext2D, p: FigureParams): void {
-  const H = Math.max(1e-3, p.H);
-  const hipHeight = p.hipFrac * H;
-  const thighLen = 0.28 * H;
-  const shinLen = 0.26 * H;
-  const shoulderUp = 0.3 * H;
-  const neckUp = shoulderUp + 0.04 * H;
-  const headRadius = 0.085 * H * (0.9 + 0.1 * p.widthMult);
-  const headUp = neckUp + headRadius;
-  const upperArmLen = 0.17 * H * p.armLenMult;
-  const forearmLen = 0.16 * H * p.armLenMult;
-  const wm = p.widthMult;
-  const strokeAlso = !!p.strokeAlso;
-
-  const feetY = p.cy + p.radius; // bottom of the collision circle
-  const hipWorldX = p.cx;
-  const hipWorldY = feetY - hipHeight;
-
-  ctx.fillStyle = INK;
   ctx.strokeStyle = INK;
-  ctx.lineWidth = Math.max(0.5, 0.6 * (H / 55));
-  ctx.globalAlpha = p.alpha;
+  ctx.fillStyle = INK;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
 
-  ctx.save();
-  ctx.translate(hipWorldX, hipWorldY);
-  ctx.rotate(p.bodyRotation);
+  const legW = 3.4 * k * rig.weight;
+  const armW = 2.7 * k * rig.weight;
 
-  // Legs, drawn in this (world-aligned unless tumbling) frame so a planted
-  // foot lands exactly where legFootOffset placed it.
-  for (const foot of p.legTargets) {
-    const { knee } = twoBoneIK(foot, thighLen, shinLen);
-    drawTaperedLink(ctx, 0, 0, 0.075 * H * wm, knee.x, knee.y, 0.045 * H * wm, strokeAlso);
-    drawTaperedLink(ctx, knee.x, knee.y, 0.04 * H * wm, foot.x, foot.y, 0.022 * H * wm, strokeAlso);
-    // A short foot/shoe stub continuing forward from the ankle so the
-    // silhouette reads as a foot rather than a line simply stopping.
-    const footLen = 0.11 * H * p.facing;
-    drawTaperedLink(
-      ctx,
-      foot.x,
-      foot.y,
-      0.03 * H * wm,
-      foot.x + footLen,
-      foot.y,
-      0.012 * H * wm,
-      strokeAlso
-    );
-  }
+  // --- legs ----------------------------------------------------------------
+  for (const side of [0, 1]) {
+    const p = (phase + side * 0.5) % 1;
+    let foot = footOffset(p);
+    foot = { x: foot.x * k, y: foot.y * k };
 
-  // Torso, neck, head and arms pivot forward from the hip by `lean`, on top
-  // of whatever whole-body rotation is already applied.
-  ctx.save();
-  ctx.rotate(p.lean);
-
-  drawTaperedLink(ctx, 0, 0, 0.085 * H * wm, 0, -shoulderUp, 0.11 * H * wm, strokeAlso);
-  drawTaperedLink(ctx, 0, -shoulderUp, 0.045 * H * wm, 0, -neckUp, 0.04 * H * wm, strokeAlso);
-
-  ctx.beginPath();
-  ctx.arc(0, -headUp, headRadius, 0, Math.PI * 2);
-  ctx.fill();
-  if (strokeAlso) ctx.stroke();
-
-  const shoulderY = -shoulderUp;
-  for (let i = 0; i < 2; i++) {
-    const shAngle = p.armAngles[i];
-    const elAngle = shAngle + p.elbowBends[i];
-    const ex = upperArmLen * Math.sin(shAngle) * p.facing;
-    const ey = shoulderY + upperArmLen * Math.cos(shAngle);
-    const hx = ex + forearmLen * Math.sin(elAngle) * p.facing;
-    const hy = ey + forearmLen * Math.cos(elAngle);
-    drawTaperedLink(ctx, 0, shoulderY, 0.055 * H * wm, ex, ey, 0.032 * H * wm, strokeAlso);
-    drawTaperedLink(ctx, ex, ey, 0.032 * H * wm, hx, hy, 0.02 * H * wm, strokeAlso);
-  }
-
-  ctx.restore(); // torso/head/arm lean
-  ctx.restore(); // hip translate + bodyRotation
-}
-
-/** Shared base for the two airborne poses (rising vs falling), so a runner
- *  and a chaser both get "the transition matters more than either pose": a
- *  single continuous blend driven by vel.y, rather than two frozen poses
- *  with a snap between them at takeoff/landing. */
-interface AirborneBase {
-  pos: Vec2;
-  vel: Vec2;
-  radius: number;
-  facing: 1 | -1;
-  H: number;
-  hipFrac: number;
-  widthMult: number;
-  armLenMult: number;
-  lean: number;
-  alpha: number;
-  strokeAlso?: boolean;
-}
-
-const AIR_REFERENCE_SPEED = 480; // px/s of vel.y treated as "fully" rising/falling
-
-/** Pose-only half of the airborne figure: legs, arms and lean, with no
- *  drawing. Split out from `drawAirbornePose` so `drawRunner` can blend this
- *  against the grounded gait pose instead of hard-switching between the two
- *  draw paths at the grounded/airborne boundary. */
-interface GaitPose {
-  legTargets: [Vec2, Vec2];
-  armAngles: [number, number];
-  elbowBends: [number, number];
-  lean: number;
-}
-
-function computeAirbornePose(base: AirborneBase, t: number): GaitPose {
-  const H = base.H;
-  const legLen = 0.54 * H;
-
-  // +1 = rising fast, -1 = falling fast, continuous through the apex.
-  const rising = clamp(-base.vel.y / AIR_REFERENCE_SPEED, -1, 1);
-  const riseAmt = (rising + 1) / 2; // 0 falling .. 1 rising
-
-  // Rising: legs gathered, knees driven up close to the hip.
-  const tuck = { x: 0.3 * legLen, y: 0.42 * legLen };
-  // Falling: legs trailing/reaching, extended down and forward for landing.
-  const reach = { x: 0.62 * legLen, y: 0.98 * legLen };
-
-  const wobble = Math.sin(t * 9) * 0.05 * legLen; // a little life, not ground-locked
-  const baseX = lerp(reach.x, tuck.x, riseAmt);
-  const baseY = lerp(reach.y, tuck.y, riseAmt);
-  const legTargets: [Vec2, Vec2] = [
-    { x: (baseX + wobble) * base.facing, y: baseY },
-    { x: (baseX - wobble * 0.6) * base.facing, y: baseY * 0.92 },
-  ];
-
-  // Arms up for balance in both states; rising tucks them in a touch more,
-  // falling throws them further back for bracing.
-  const armBase = lerp(2.0, 2.6, riseAmt);
-  const armAngles: [number, number] = [
-    armBase + Math.sin(t * 9) * 0.12,
-    armBase - Math.sin(t * 9 + 1) * 0.12,
-  ];
-  const elbowBends: [number, number] = [0.5, 0.5];
-  const lean = base.lean * (0.6 + 0.4 * riseAmt);
-
-  return { legTargets, armAngles, elbowBends, lean };
-}
-
-function drawAirbornePose(ctx: CanvasRenderingContext2D, base: AirborneBase, t: number): void {
-  const pose = computeAirbornePose(base, t);
-  drawArticulatedFigure(ctx, {
-    cx: base.pos.x,
-    cy: base.pos.y,
-    radius: base.radius,
-    facing: base.facing,
-    H: base.H,
-    hipFrac: base.hipFrac,
-    widthMult: base.widthMult,
-    armLenMult: base.armLenMult,
-    lean: pose.lean,
-    bodyRotation: 0,
-    legTargets: pose.legTargets,
-    armAngles: pose.armAngles,
-    elbowBends: pose.elbowBends,
-    alpha: base.alpha,
-    strokeAlso: base.strokeAlso,
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Runner.
-// ---------------------------------------------------------------------------
-
-const RUNNER_STRIDE_LENGTH = 90; // world px per full gait cycle
-const RUNNER_HEIGHT_MULT = 4.6; // ~4-5x collision radius, per spec
-const RUNNER_HIP_FRAC = 0.5;
-const RUNNER_LEAN = 0.22;
-const RUNNER_DRIFT_SEED = 1.3; // independent of the chaser's, so the two drift apart
-
-/** Small phase delay so secondary segments visibly lag the primary motion
- *  they're attached to — forearm behind upper arm, torso/head settle behind
- *  the hips — instead of moving in lockstep. The single biggest "alive vs
- *  mechanically articulated" cue. */
-const FOLLOW_THROUGH_LAG = 0.28; // radians
-
-/** Vertical speed, in px/s, over which the grounded<->airborne pose blend
- *  ramps from 0 to 1. Small hops off this terrain's bumps rarely exceed this,
- *  so the common case eases smoothly instead of snapping between draw paths;
- *  a hard jump still reaches full blend within a frame or two. */
-const GROUND_AIR_BLEND_SPEED = 140;
-
-export function drawRunner(ctx: CanvasRenderingContext2D, runner: Runner, t: number): void {
-  const radius = runner.radius || RUNNER_RADIUS;
-  const H = radius * RUNNER_HEIGHT_MULT;
-  const facing: 1 | -1 = runner.vel.x < 0 ? -1 : 1;
-
-  ctx.save();
-
-  const drift = driftAt(t, RUNNER_DRIFT_SEED);
-  const stepHalf = (RUNNER_STRIDE_LENGTH / 4) * (1 + drift * 0.12);
-  const freq = gaitFrequency(RUN_SPEED, RUNNER_STRIDE_LENGTH);
-  const phase = gaitPhase(t, freq);
-  const hipHeight = RUNNER_HIP_FRAC * H;
-  const bob = bodyBobOffset(phase, 0.03 * H);
-  const lift = 0.16 * H;
-
-  const legPhases: [number, number] = [phase, phase + Math.PI];
-  const groundedLegTargets: [Vec2, Vec2] = legPhases.map((ph) => {
-    const off = legFootOffset(ph, stepHalf, lift);
-    return { x: off.x * facing, y: hipHeight + bob + off.y };
-  }) as [Vec2, Vec2];
-
-  // Contralateral: each arm takes the OTHER leg's phase.
-  const armPhases: [number, number] = [phase + Math.PI, phase];
-  const armSwingAmp = 0.9 * (1 + drift * 0.12);
-  const groundedArmAngles: [number, number] = [
-    armSwingAngle(armPhases[0], armSwingAmp),
-    armSwingAngle(armPhases[1], armSwingAmp),
-  ];
-  // Forearm lags the upper arm's phase — follow-through.
-  const groundedElbowBends: [number, number] = [
-    elbowBendAngle(armPhases[0] - FOLLOW_THROUGH_LAG, 0.35, 0.55),
-    elbowBendAngle(armPhases[1] - FOLLOW_THROUGH_LAG, 0.35, 0.55),
-  ];
-  // Torso/head settle slightly behind the hips.
-  const twist = torsoCounterRotation(phase - FOLLOW_THROUGH_LAG, 0.05);
-  const groundedLean = RUNNER_LEAN * (1 + drift * 0.12) + twist;
-
-  const airbornePose = computeAirbornePose(
-    {
-      pos: runner.pos,
-      vel: runner.vel,
-      radius,
-      facing,
-      H,
-      hipFrac: RUNNER_HIP_FRAC,
-      widthMult: 1,
-      armLenMult: 1,
-      lean: RUNNER_LEAN,
-      alpha: 1,
-    },
-    t
-  );
-
-  // Blend continuously by vertical speed rather than switching instantly on
-  // `grounded`: this terrain crosses that boundary constantly (small step-ups
-  // and landings), and a hard cut between the two draw paths reads as a
-  // glitch. A real body doesn't snap pose at the instant a foot leaves or
-  // touches the ground either — it eases across a short window either side.
-  const airborneAmt = runner.grounded
-    ? 0
-    : clamp(Math.abs(runner.vel.y) / GROUND_AIR_BLEND_SPEED, 0, 1);
-
-  const legTargets: [Vec2, Vec2] = [
-    {
-      x: lerp(groundedLegTargets[0].x, airbornePose.legTargets[0].x, airborneAmt),
-      y: lerp(groundedLegTargets[0].y, airbornePose.legTargets[0].y, airborneAmt),
-    },
-    {
-      x: lerp(groundedLegTargets[1].x, airbornePose.legTargets[1].x, airborneAmt),
-      y: lerp(groundedLegTargets[1].y, airbornePose.legTargets[1].y, airborneAmt),
-    },
-  ];
-  const armAngles: [number, number] = [
-    lerp(groundedArmAngles[0], airbornePose.armAngles[0], airborneAmt),
-    lerp(groundedArmAngles[1], airbornePose.armAngles[1], airborneAmt),
-  ];
-  const elbowBends: [number, number] = [
-    lerp(groundedElbowBends[0], airbornePose.elbowBends[0], airborneAmt),
-    lerp(groundedElbowBends[1], airbornePose.elbowBends[1], airborneAmt),
-  ];
-  const lean = lerp(groundedLean, airbornePose.lean, airborneAmt);
-
-  drawArticulatedFigure(ctx, {
-    cx: runner.pos.x,
-    cy: runner.pos.y,
-    radius,
-    facing,
-    H,
-    hipFrac: RUNNER_HIP_FRAC,
-    widthMult: 1,
-    armLenMult: 1,
-    lean,
-    bodyRotation: 0,
-    legTargets,
-    armAngles,
-    elbowBends,
-    alpha: 1,
-  });
-
-  ctx.restore();
-}
-
-// ---------------------------------------------------------------------------
-// Chaser: same rig, tuned to read as a predator on sight — bigger, heavier,
-// lower and more forward-pitched than the runner, with longer reaching arms
-// and a faster, more ragged gait. There is no colour or word available in a
-// monochrome, wordless game, so "denser, darker mass" is read entirely
-// through bulk (widthMult) and posture (crouch + steep lean), not hue.
-// ---------------------------------------------------------------------------
-
-const CHASER_STRIDE_LENGTH = 62; // shorter than the runner's -> higher cadence
-const CHASER_HEIGHT_MULT = 5.0; // top of the 4-5x band: reads bigger even before CHASER_RADIUS > RUNNER_RADIUS is factored in
-const CHASER_HIP_FRAC = 0.4; // crouched, low predatory stance
-const CHASER_LEAN = 0.42; // steep forward pitch
-const CHASER_WIDTH_MULT = 1.4; // heavier mass
-const CHASER_ARM_MULT = 1.35; // longer reach
-const CHASER_RAGGED = 0.35; // odd-harmonic jitter amplitude: an uneven, scrabbling cycle
-const CHASER_DRIFT_SEED = 4.7; // different from the runner's -> the two drift independently
-const CHASER_DRIFT_RATE = 2.4; // faster than the runner's drift -> rougher, less regular read
-
-export function drawChaser(ctx: CanvasRenderingContext2D, chaser: Chaser, t: number): void {
-  const radius = chaser.radius || CHASER_RADIUS;
-  const H = radius * CHASER_HEIGHT_MULT;
-  const facing: 1 | -1 = chaser.vel.x < 0 ? -1 : 1;
-
-  ctx.save();
-  if (chaser.grounded) {
-    const drift = driftAt(t * CHASER_DRIFT_RATE, CHASER_DRIFT_SEED);
-    const stepHalf = (CHASER_STRIDE_LENGTH / 4) * (1 + drift * 0.12);
-    const freq = gaitFrequency(CHASER_SPEED, CHASER_STRIDE_LENGTH);
-    const phase = gaitPhase(t, freq);
-    const hipHeight = CHASER_HIP_FRAC * H;
-    const bob = bodyBobOffset(phase, 0.05 * H); // heavier, rougher bob than the runner's
-    const lift = 0.2 * H;
-
-    const legPhases: [number, number] = [phase, phase + Math.PI];
-    const legTargets: [Vec2, Vec2] = legPhases.map((ph, i) => {
-      // Ragged: the two legs don't swing with identical amplitude — a
-      // scrabbling unevenness rather than a clean, jogged cycle.
-      const jitter = 1 + CHASER_RAGGED * 0.15 * Math.sin(3 * ph) * (i === 0 ? 1 : -1);
-      const off = legFootOffset(ph, stepHalf * jitter, lift * jitter);
-      return { x: off.x * facing, y: hipHeight + bob + off.y };
-    }) as [Vec2, Vec2];
-
-    const armPhases: [number, number] = [phase + Math.PI, phase];
-    const armSwingAmp = 1.15 * (1 + drift * 0.12);
-    const armAngles: [number, number] = [
-      armSwingAngle(armPhases[0], armSwingAmp),
-      armSwingAngle(armPhases[1], armSwingAmp),
-    ];
-    // A shallower elbow bend than the runner's (straighter, longer-reaching
-    // arms), lagging the upper arm's phase the same way the runner's does.
-    const elbowBends: [number, number] = [
-      elbowBendAngle(armPhases[0] - FOLLOW_THROUGH_LAG, 0.25, 0.45),
-      elbowBendAngle(armPhases[1] - FOLLOW_THROUGH_LAG, 0.25, 0.45),
-    ];
-    const twist =
-      torsoCounterRotation(phase - FOLLOW_THROUGH_LAG, 0.08) +
-      CHASER_RAGGED * 0.06 * Math.sin(5 * phase);
-
-    drawArticulatedFigure(ctx, {
-      cx: chaser.pos.x,
-      cy: chaser.pos.y,
-      radius,
-      facing,
-      H,
-      hipFrac: CHASER_HIP_FRAC,
-      widthMult: CHASER_WIDTH_MULT,
-      armLenMult: CHASER_ARM_MULT,
-      lean: CHASER_LEAN * (1 + drift * 0.12) + twist,
-      bodyRotation: 0,
-      legTargets,
-      armAngles,
-      elbowBends,
-      alpha: 1,
-    });
-  } else {
-    drawAirbornePose(
-      ctx,
-      {
-        pos: chaser.pos,
-        vel: chaser.vel,
-        radius,
-        facing,
-        H,
-        hipFrac: CHASER_HIP_FRAC,
-        widthMult: CHASER_WIDTH_MULT,
-        armLenMult: CHASER_ARM_MULT,
-        lean: CHASER_LEAN,
-        alpha: 1,
-      },
-      t
-    );
-  }
-  ctx.restore();
-}
-
-// ---------------------------------------------------------------------------
-// Ghost: the runner's body, ghosted, that runs ahead and falls into the
-// first gap in plain view — the game's only tutorial, so the fall has to
-// read as a real loss of control, not a variant jump.
-// ---------------------------------------------------------------------------
-
-const GHOST_ALPHA = 0.3;
-const GHOST_FADE_SECONDS = 2.5;
-
-export function drawGhost(ctx: CanvasRenderingContext2D, ghost: Ghost, t: number): void {
-  const radius = ghost.radius || RUNNER_RADIUS;
-  const H = radius * RUNNER_HEIGHT_MULT;
-  const facing: 1 | -1 = ghost.vel.x < 0 ? -1 : 1;
-  const falling = ghost.goneFor > 0;
-  const fadeMult = falling ? clamp(1 - ghost.goneFor / GHOST_FADE_SECONDS, 0, 1) : 1;
-
-  ctx.save();
-  if (fadeMult > 0) {
-    if (falling) {
-      // Tumbling: a whole-body rotation (legs included — this is the one
-      // case bodyRotation is nonzero) driven by goneFor, with limbs
-      // flailing at a fast, uncoordinated frequency instead of the clean
-      // run gait, so it reads as a genuine loss of control.
-      const tumbleAngle = ghost.goneFor * 5.5 * facing;
-      const flail = t * 14;
-      const H2 = H;
-      const legTargets: [Vec2, Vec2] = [
-        {
-          x: Math.sin(flail) * 0.5 * H2 * facing,
-          y: 0.5 * H2 + Math.cos(flail * 1.3) * 0.3 * H2,
-        },
-        {
-          x: Math.sin(flail + Math.PI * 0.7) * 0.5 * H2 * facing,
-          y: 0.5 * H2 + Math.cos(flail * 1.3 + 1.1) * 0.3 * H2,
-        },
-      ];
-      const armAngles: [number, number] = [
-        armSwingAngle(flail * 1.3, 1.4),
-        armSwingAngle(flail * 1.3 + Math.PI * 0.8, 1.4),
-      ];
-      const elbowBends: [number, number] = [
-        elbowBendAngle(flail * 1.3, 0.6, 0.7),
-        elbowBendAngle(flail * 1.3 + Math.PI * 0.8, 0.6, 0.7),
-      ];
-
-      drawArticulatedFigure(ctx, {
-        cx: ghost.pos.x,
-        cy: ghost.pos.y,
-        radius,
-        facing,
-        H,
-        hipFrac: RUNNER_HIP_FRAC,
-        widthMult: 1,
-        armLenMult: 1,
-        lean: 0,
-        bodyRotation: tumbleAngle,
-        legTargets,
-        armAngles,
-        elbowBends,
-        alpha: GHOST_ALPHA * fadeMult,
-        strokeAlso: true,
-      });
-    } else if (ghost.grounded) {
-      const stepHalf = RUNNER_STRIDE_LENGTH / 4;
-      const freq = gaitFrequency(RUN_SPEED, RUNNER_STRIDE_LENGTH);
-      const phase = gaitPhase(t, freq);
-      const hipHeight = RUNNER_HIP_FRAC * H;
-      const bob = bodyBobOffset(phase, 0.03 * H);
-      const lift = 0.16 * H;
-
-      const legPhases: [number, number] = [phase, phase + Math.PI];
-      const legTargets: [Vec2, Vec2] = legPhases.map((ph) => {
-        const off = legFootOffset(ph, stepHalf, lift);
-        return { x: off.x * facing, y: hipHeight + bob + off.y };
-      }) as [Vec2, Vec2];
-
-      const armPhases: [number, number] = [phase + Math.PI, phase];
-      const armAngles: [number, number] = [
-        armSwingAngle(armPhases[0], 0.9),
-        armSwingAngle(armPhases[1], 0.9),
-      ];
-      const elbowBends: [number, number] = [
-        elbowBendAngle(armPhases[0], 0.35, 0.55),
-        elbowBendAngle(armPhases[1], 0.35, 0.55),
-      ];
-      const twist = torsoCounterRotation(phase, 0.05);
-
-      drawArticulatedFigure(ctx, {
-        cx: ghost.pos.x,
-        cy: ghost.pos.y,
-        radius,
-        facing,
-        H,
-        hipFrac: RUNNER_HIP_FRAC,
-        widthMult: 1,
-        armLenMult: 1,
-        lean: RUNNER_LEAN + twist,
-        bodyRotation: 0,
-        legTargets,
-        armAngles,
-        elbowBends,
-        alpha: GHOST_ALPHA * fadeMult,
-        strokeAlso: true,
-      });
-    } else {
-      drawAirbornePose(
-        ctx,
-        {
-          pos: ghost.pos,
-          vel: ghost.vel,
-          radius,
-          facing,
-          H,
-          hipFrac: RUNNER_HIP_FRAC,
-          widthMult: 1,
-          armLenMult: 1,
-          lean: RUNNER_LEAN,
-          alpha: GHOST_ALPHA * fadeMult,
-          strokeAlso: true,
-        },
-        t
-      );
+    if (airborne > 0) {
+      // Airborne: legs gather when rising, reach when falling. Blended in, so
+      // the ground-to-air transition never snaps.
+      const reach = clamp(vy / 700, -1, 1);
+      const air: Vec2 = {
+        x: (STEP_AHEAD + reach * 12 - (1 - side) * 5) * k,
+        y: (HIP_HEIGHT - 9 + reach * 9) * k,
+      };
+      foot = {
+        x: foot.x + (air.x - foot.x) * airborne,
+        y: foot.y + (air.y - foot.y) * airborne,
+      };
     }
+
+    // Knees bend forward: +1 in this local space.
+    const knee = solveJoint(hip, foot, THIGH * k, SHIN * k, 1);
+    bone(ctx, hip, knee, legW);
+    bone(ctx, knee, foot, legW * 0.86);
   }
+
+  // --- arms: opposite the same-side leg -------------------------------------
+  for (const side of [0, 1]) {
+    const p = (phase + side * 0.5 + 0.5) % 1 + jitter;
+    const a = p * Math.PI * 2;
+    const swing = Math.cos(a);
+    const hand: Vec2 = {
+      x: shoulder.x + (6 + swing * 17) * k,
+      y: shoulder.y + (13 - Math.abs(swing) * 3) * k,
+    };
+    // Elbows bend backward: -1.
+    const elbow = solveJoint(shoulder, hand, UPPER_ARM * k, FOREARM * k, -1);
+    bone(ctx, shoulder, elbow, armW);
+    bone(ctx, elbow, hand, armW * 0.86);
+  }
+
+  // --- torso and head -------------------------------------------------------
+  bone(ctx, hip, shoulder, 4.2 * k * rig.weight);
+  const head: Vec2 = {
+    x: shoulder.x + Math.sin(rig.lean) * NECK * k,
+    y: shoulder.y - Math.cos(rig.lean) * NECK * k - HEAD_R * k,
+  };
+  ctx.beginPath();
+  ctx.arc(head.x, head.y, HEAD_R * k, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+type Body = { pos: Vec2; vel: Vec2; radius: number; grounded: boolean };
+
+/** Place, orient and draw a figure. `slopeAngle` rotates the whole body so it
+ *  stands square to the ground it is on; `facing` mirrors it. */
+function drawFigure(
+  ctx: CanvasRenderingContext2D,
+  body: Body,
+  phase: number,
+  rig: Rig,
+  alpha: number,
+): void {
+  // Square to the surface while grounded; upright in the air.
+  const slope = body.grounded
+    ? clamp(Math.atan2(body.vel.y, Math.abs(body.vel.x) || 1), -0.6, 0.6)
+    : 0;
+  const facing = body.vel.x < -1 ? -1 : 1;
+  // Blend rather than switch, so leaving and rejoining the ground is smooth.
+  const airborne = body.grounded ? 0 : clamp(Math.abs(body.vel.y) / 260, 0, 1);
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  // Feet sit at the bottom of the collision circle; the hip rides above them.
+  ctx.translate(body.pos.x, body.pos.y + body.radius);
+  ctx.rotate(slope);
+  ctx.scale(facing, 1);
+  ctx.translate(0, -(HIP_HEIGHT + STEP_H / 2) * rig.size);
+  drawSkeleton(ctx, phase, rig, airborne, body.vel.y);
+  ctx.restore();
+}
+
+export function drawRunner(
+  ctx: CanvasRenderingContext2D,
+  runner: Runner,
+  phase: number,
+): void {
+  drawFigure(ctx, runner, phase, RUNNER_RIG, 1);
+}
+
+export function drawChaser(
+  ctx: CanvasRenderingContext2D,
+  chaser: Chaser,
+  phase: number,
+): void {
+  drawFigure(ctx, chaser, phase, CHASER_RIG, 1);
+}
+
+export function drawGhost(
+  ctx: CanvasRenderingContext2D,
+  ghost: Ghost,
+  phase: number,
+): void {
+  if (ghost.goneFor <= 0) {
+    drawFigure(ctx, ghost, phase, RUNNER_RIG, 0.34);
+    return;
+  }
+  // Falling out of the world: tumble and fade. This is the game's opening
+  // lesson about what a gap costs, so it has to read as a genuine fall.
+  const fade = clamp(1 - ghost.goneFor / 2.5, 0, 1);
+  ctx.save();
+  ctx.globalAlpha = 0.34 * fade;
+  ctx.translate(ghost.pos.x, ghost.pos.y + ghost.radius);
+  ctx.rotate(ghost.goneFor * 4.2);
+  ctx.translate(0, -(HIP_HEIGHT + STEP_H / 2));
+  drawSkeleton(ctx, (ghost.goneFor * 3) % 1, RUNNER_RIG, 1, 400);
   ctx.restore();
 }

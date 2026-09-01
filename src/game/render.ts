@@ -64,9 +64,9 @@ export function render(
   drawPickups(ctx, state.level, state.elapsed);
   drawStrokes(ctx, state.strokes, state.level.stub, scale);
   drawFinish(ctx, state.level, state.elapsed);
-  if (state.ghost) drawGhost(ctx, state.ghost, state.elapsed);
-  drawChaser(ctx, state.chaser, state.elapsed);
-  drawRunner(ctx, state.runner, state.elapsed);
+  if (state.ghost) drawGhost(ctx, state.ghost, state.ghostPhase);
+  drawChaser(ctx, state.chaser, state.chaserPhase);
+  drawRunner(ctx, state.runner, state.runPhase);
   ctx.restore();
 
   // Slow motion pales the WORLD, and only the world: the wash goes down here,

@@ -86,6 +86,12 @@ export type GameState = {
   /** The chaser's own watermark and stall timer. A player can wall it in. */
   chaserProgressX: number;
   chaserStuckFor: number;
+  /** Gait phase in [0,1) per figure, advanced by distance actually travelled
+   *  rather than by clock, so feet keep pace with the ground under them and
+   *  slow motion slows the stride for free. */
+  runPhase: number;
+  chaserPhase: number;
+  ghostPhase: number;
   strokes: Stroke[];
   ink: number;
   maxInk: number;
