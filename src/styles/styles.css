@@ -1,6 +1,18 @@
+/* The page tone behind the canvas.
+   Every level now paints its own paper (see src/game/palette.ts), so there is
+   no single "correct" page colour any more — but there IS a correct FIRST
+   one. The campaign opens on palette 0, dawn, and these are that palette's
+   own paper and ink to the byte. Anything else here shows as a flash of the
+   wrong colour in the moment between the stylesheet landing and the first
+   frame being drawn, and again in any overscroll rubber-band on mobile.
+   If palette 0 changes, change these with it. */
 :root {
-  --paper: #f4f1e8;
-  --ink: #1a1a2e;
+  --paper: rgb(247, 241, 230);
+  --ink: rgb(34, 32, 46);
+  /* The page is a light document; the canvas paints its own dark for the
+     night level. Declaring this stops a dark-mode UA painting its own
+     background behind a canvas that has not drawn yet. */
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -10,7 +22,11 @@ html, body {
   padding: 0;
   height: 100%;
   overflow: hidden;
+  /* No rubber-band: the canvas is the whole page, and a bounce exposes the
+     page tone under a world that may be night-dark. */
+  overscroll-behavior: none;
   background: var(--paper);
+  color: var(--ink);
 }
 
 /* Present for the invariants and for assistive tech, absent from the screen:
@@ -35,4 +51,7 @@ main { display: block; height: 100%; }
   height: 100%;
   touch-action: none;   /* pointer events own the gesture, not the browser */
   cursor: none;         /* the nib is drawn on the canvas instead */
+  /* Matches the opening palette's paper, so a canvas that is sized but not
+     yet painted is indistinguishable from one that is. */
+  background: var(--paper);
 }
