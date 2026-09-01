@@ -16,6 +16,11 @@ export const MIN_SIGHTLINE = 700;
 export const GROUND_SCREEN_FRACTION = 0.72;
 
 export const RUN_SPEED = 260;        // px/s, constant and scripted
+// Raised from 1500 after auditing the built game: at 1500 the ballistic range
+// was long enough that five of eight gaps could be cleared with no ink at all,
+// and ramp launches carried even further — so most gaps were not the
+// spend-or-save decision the design rests on. Heavier gravity shortens every
+// arc and tames the launch.
 export const GRAVITY = 1500;         // px/s^2
 export const MAX_FALL_SPEED = 1400;  // px/s, prevents tunneling at terminal velocity
 export const RUNNER_RADIUS = 12;
@@ -40,5 +45,17 @@ export const SLOWMO_SCALE = 0.35;
  *  polylines cheap and stops jitter inflating ink cost. */
 export const STROKE_POINT_SPACING = 6;
 
-/** Falling below this many px under the lowest ground is a loss. */
-export const FALL_KILL_DEPTH = 400;
+/** How high the runner will hoist itself over an obstruction in its path.
+ *  A hand-drawn stroke almost always ends in a small vertical wobble, and
+ *  without this the runner stops dead against its own line and stands there
+ *  until the chaser arrives — which reads as the game breaking, not as a
+ *  mistake the player made. Generous enough to forgive a wobble, too small
+ *  to climb a deliberate wall. */
+export const STEP_UP_MAX = 16;
+
+/** Falling below this many px under the lowest ground is a loss. Kept small
+ *  deliberately: at 400 the runner died far below the view and the losing
+ *  screen showed an empty world, giving the player no visible cause of death
+ *  in a game that is not allowed to explain itself in words. At this depth
+ *  the fall is still legible on screen when it kills. */
+export const FALL_KILL_DEPTH = 90;

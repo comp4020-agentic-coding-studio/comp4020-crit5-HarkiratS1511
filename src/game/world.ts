@@ -14,6 +14,7 @@ import {
   PICKUP_RADIUS,
   RUNNER_RADIUS,
   RUN_SPEED,
+  STEP_UP_MAX,
 } from "./tuning";
 
 /** Ground surface height at a world x, or null over a gap. Only static
@@ -93,7 +94,25 @@ export function step(state: GameState, dt: number, chaserDt: number = dt): void 
   if (runner.grounded) runner.vel.x = RUN_SPEED;
 
   const surfaces = runnerSurfaces(state);
-  const moved = resolveMovement(runner.pos, runner.vel, runner.radius, surfaces, dt);
+  let moved = resolveMovement(runner.pos, runner.vel, runner.radius, surfaces, dt);
+
+  // Step-up assist. If forward progress was blocked, try again from slightly
+  // higher up: a stroke that ends in a small upward wobble should be mounted,
+  // not run into. Without this the runner wedges against its own line and
+  // jitters in place until the chaser reaches it.
+  const wanted = runner.vel.x * dt;
+  const progressed = moved.pos.x - runner.pos.x;
+  if (runner.grounded && wanted > 0 && progressed < wanted * 0.25) {
+    for (const lift of [STEP_UP_MAX * 0.4, STEP_UP_MAX * 0.7, STEP_UP_MAX]) {
+      const from = { x: runner.pos.x, y: runner.pos.y - lift };
+      const probe = resolveMovement(from, runner.vel, runner.radius, surfaces, dt);
+      if (probe.pos.x - runner.pos.x > wanted * 0.5) {
+        moved = probe;
+        break;
+      }
+    }
+  }
+
   runner.pos = moved.pos;
   runner.vel = moved.vel;
   runner.grounded = moved.grounded;

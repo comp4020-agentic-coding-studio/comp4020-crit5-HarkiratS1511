@@ -49,6 +49,24 @@ function start(canvas: HTMLCanvasElement): void {
   let accumulator = 0;
   let last = performance.now();
 
+  // A read-only seam for automated playthroughs. It exposes the live state and
+  // the SAME camera/scale the renderer and pointer use, so a driving script
+  // never has to reimplement the transform — reimplementing it is exactly how
+  // the earlier scale drift went unnoticed. Nothing here is reachable by, or
+  // visible to, a player.
+  (window as unknown as Record<string, unknown>).__inkDebug = {
+    get state(): GameState {
+      return state;
+    },
+    get transform(): { camera: number; cameraY: number; scale: number } {
+      return {
+        camera: cameraFor(state, viewport),
+        cameraY: cameraYFor(state, viewport),
+        scale: worldScale(viewport),
+      };
+    },
+  };
+
   const frame = (now: number): void => {
     // Clamp so a backgrounded tab doesn't resume by simulating a lost minute.
     const realDt = Math.min((now - last) / 1000, 0.25);
