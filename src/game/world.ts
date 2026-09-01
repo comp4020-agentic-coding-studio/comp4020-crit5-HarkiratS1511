@@ -4,6 +4,7 @@
 
 import type { GameState, Level, Segment, Stroke, Vec2 } from "./types";
 import { resolveMovement, segmentsFromPolyline } from "./geometry";
+import { inkCost } from "./ink";
 import {
   CHASER_RADIUS,
   CHASER_SPEED,
@@ -61,7 +62,11 @@ export function createState(level: Level): GameState {
       radius: CHASER_RADIUS,
     },
     strokes: [],
-    ink: MAX_INK,
+    // The bar does not start full. The teaching stub was drawn by someone, so
+    // it was paid for, and the notch missing from the bar is the only thing
+    // that ever explains what the bar is for: a line exists, ink is gone,
+    // the two are the same substance. No words are permitted to say it.
+    ink: level.stub ? Math.max(0, MAX_INK - inkCost(level.stub.points)) : MAX_INK,
     maxInk: MAX_INK,
     phase: "running",
     level,

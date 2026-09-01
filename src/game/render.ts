@@ -87,18 +87,6 @@ export function render(
   ctx.fillRect(0, 0, viewport.width, viewport.height);
 
   const slowmo = pointer.down && state.phase === "running";
-  if (slowmo) {
-    // Slow-motion feedback: a soft desaturating wash over the whole frame,
-    // teaching "press => time crawls" the moment it first happens. Applied
-    // before the world so the ink strokes drawn on top still read at full
-    // strength (the thing the player is actively doing stays crisp; the
-    // world around it visibly settles).
-    ctx.save();
-    ctx.globalAlpha = 0.18;
-    ctx.fillStyle = "#8a8a98";
-    ctx.fillRect(0, 0, viewport.width, viewport.height);
-    ctx.restore();
-  }
 
   const scale = worldScale(viewport);
 
@@ -115,20 +103,45 @@ export function render(
   drawPickups(ctx, state);
   drawStub(ctx, state, scale);
   drawStrokes(ctx, state, scale);
-  drawLivePreview(ctx, pointer, scale);
   drawFinish(ctx, state);
   drawChaser(ctx, state);
   drawRunner(ctx, state);
-  drawNib(ctx, pointer, scale);
 
   ctx.restore(); // undo world transform
+
+  // Slow motion pales the WORLD, and only the world. The wash goes down here,
+  // then the live stroke and the nib are drawn over it, so the pen stays at
+  // full strength while everything around it settles: "press, and the world
+  // thickens — your instrument does not." That has to land without a word.
+  //
+  // Deliberately LIGHT. Losing is the dark signal, and the two may never be
+  // mistakable for one another: before this, slow motion was a grey wash with
+  // a dark vignette and losing was a dark radial flood — the same shape and
+  // colour at different opacities, which is no distinction at all at a glance.
+  if (slowmo) {
+    ctx.save();
+    ctx.globalAlpha = 0.55;
+    ctx.fillStyle = PAPER;
+    ctx.fillRect(0, 0, viewport.width, viewport.height);
+    ctx.restore();
+  }
+
+  ctx.save();
+  ctx.translate(-camera * scale, -cameraYFor(state, viewport) * scale);
+  ctx.scale(scale, scale);
+  drawLivePreview(ctx, pointer, scale);
+  drawNib(ctx, pointer, scale);
+  ctx.restore();
 
   drawInkBar(ctx, state, viewport);
 
   if (state.phase === "won") drawWinOverlay(ctx, state, camera, scale, viewport);
-  if (state.phase === "lost") drawLossOverlay(ctx, viewport);
-
-  if (slowmo) drawVignette(ctx, viewport);
+  if (state.phase === "lost") {
+    drawLossOverlay(ctx, viewport);
+    // The vignette now belongs to losing alone, adding edge weight to the
+    // flood rather than diluting the slow-motion signal.
+    drawVignette(ctx, viewport);
+  }
 
   ctx.restore();
 }
