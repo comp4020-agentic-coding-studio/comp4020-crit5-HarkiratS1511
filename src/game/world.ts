@@ -92,30 +92,48 @@ function lowestGround(level: Level): number {
   return lowest;
 }
 
+/** Ground surface at `x`, falling back to the level's flat baseline only for
+ *  an x truly off the authored terrain (never expected for a spawn point).
+ *
+ *  Spawns used to be placed at the flat `groundY` baseline unconditionally.
+ *  That was safe while the run-up was dead flat, but the terrain pass added
+ *  gentle texture (see `swell` in level.ts) to long flat stretches for
+ *  visual interest, and level 0's swell sits directly under the ghost's
+ *  spawn point (GHOST_LEAD = 300, inside the swell's 60-510 span). A body
+ *  placed at the BASELINE height there spawns a few px under the actual
+ *  (raised) local surface — already overlapping terrain — and the very
+ *  first physics tick reads that as airborne. The ghost then free-fell from
+ *  frame one, frozen near its spawn well before the real first gap, instead
+ *  of running out ahead and falling into it: the game's entire wordless
+ *  tutorial silently broken by a texture change nothing else here touched. */
+function spawnY(x: number, level: Level, radius: number): number {
+  const surface = groundSurfaceYAt(x, level.groundSegments);
+  return (surface ?? level.groundY) - radius;
+}
+
 export function createState(levelIndex: number): GameState {
   const level = buildLevel(levelIndex);
   const runner: Runner = {
-    pos: { x: level.startX, y: level.groundY - RUNNER_RADIUS },
+    pos: { x: level.startX, y: spawnY(level.startX, level, RUNNER_RADIUS) },
     vel: { x: RUN_SPEED, y: 0 },
     radius: RUNNER_RADIUS,
     grounded: true,
   };
+  const chaserStartXAt = Math.min(level.chaserStartX, level.startX - CHASE_BAND_FAR);
   const chaser: Chaser = {
     // Placed by the band, not by the level: a level-authored head start that
     // is smaller than the cost of one stroke makes the opening unsurvivable.
-    pos: {
-      x: Math.min(level.chaserStartX, level.startX - CHASE_BAND_FAR),
-      y: level.groundY - CHASER_RADIUS,
-    },
+    pos: { x: chaserStartXAt, y: spawnY(chaserStartXAt, level, CHASER_RADIUS) },
     vel: { x: CHASER_SPEED, y: 0 },
     radius: CHASER_RADIUS,
     grounded: true,
   };
   // Only the first level demonstrates. After that the player knows.
+  const ghostStartX = level.startX + GHOST_LEAD;
   const ghost: Ghost | null =
     levelIndex === 0
       ? {
-          pos: { x: level.startX + GHOST_LEAD, y: level.groundY - RUNNER_RADIUS },
+          pos: { x: ghostStartX, y: spawnY(ghostStartX, level, RUNNER_RADIUS) },
           vel: { x: RUN_SPEED, y: 0 },
           radius: RUNNER_RADIUS,
           grounded: true,
