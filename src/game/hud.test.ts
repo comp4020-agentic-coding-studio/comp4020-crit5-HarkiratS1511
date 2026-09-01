@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { drawEndScreen, drawInkBar, drawSlowmoWash, restartAffordance } from "./hud";
+import { IMPACT_HOLD } from "./tuning";
 import type { GameState, Level, Phase } from "./types";
 
 const DESKTOP = { width: 1920, height: 1080 };
@@ -40,6 +41,25 @@ function mockCtx(): CanvasRenderingContext2D {
     globalAlpha: 1,
   };
   return ctx as unknown as CanvasRenderingContext2D;
+}
+
+/** Same mock as `mockCtx`, but every method call (including `save`) is
+ *  counted, so tests can assert "issued zero drawing calls" or "issued more
+ *  calls than before" without caring which specific canvas methods fired. */
+function countingMockCtx(): { ctx: CanvasRenderingContext2D; counts: { total: number } } {
+  const counts = { total: 0 };
+  const base = mockCtx() as unknown as Record<string, unknown>;
+  const wrapped: Record<string, unknown> = { ...base };
+  for (const key of Object.keys(base)) {
+    const value = base[key];
+    if (typeof value === "function") {
+      wrapped[key] = (...args: unknown[]) => {
+        counts.total += 1;
+        return (value as (...a: unknown[]) => unknown)(...args);
+      };
+    }
+  }
+  return { ctx: wrapped as unknown as CanvasRenderingContext2D, counts };
 }
 
 function makeLevel(): Level {
@@ -126,6 +146,63 @@ describe("drawEndScreen", () => {
       const state = makeState("running", 2, 600);
       expect(() => drawEndScreen(ctx, state, viewport)).not.toThrow();
     });
+  }
+});
+
+// The regression that matters: the playtest verdict was that the loss flood
+// covered the frame before the player ever saw the chaser reach them, and
+// the win ring appeared with nothing to connect it to the frozen world
+// behind it. IMPACT_HOLD (tuning.ts) fixes the timing half of that — the
+// frozen world must be left completely unobscured for that whole hold.
+describe("drawEndScreen impact hold", () => {
+  for (const viewport of VIEWPORTS) {
+    for (const phase of PHASES) {
+      it(`issues NO drawing calls at all while phaseFor < IMPACT_HOLD ("${phase}", ${viewport.width}x${viewport.height})`, () => {
+        for (const phaseFor of [0, IMPACT_HOLD * 0.25, IMPACT_HOLD * 0.5, IMPACT_HOLD * 0.9, IMPACT_HOLD - 0.001]) {
+          const { ctx, counts } = countingMockCtx();
+          const state = makeState(phase, phaseFor, 600);
+          drawEndScreen(ctx, state, viewport);
+          expect(counts.total).toBe(0);
+        }
+      });
+
+      it(`starts drawing as soon as phaseFor reaches IMPACT_HOLD ("${phase}", ${viewport.width}x${viewport.height})`, () => {
+        for (const phaseFor of [IMPACT_HOLD, IMPACT_HOLD + 0.01, IMPACT_HOLD + 1, IMPACT_HOLD + 3]) {
+          const { ctx, counts } = countingMockCtx();
+          const state = makeState(phase, phaseFor, 600);
+          drawEndScreen(ctx, state, viewport);
+          expect(counts.total).toBeGreaterThan(0);
+        }
+      });
+    }
+  }
+});
+
+// The restart affordance must key off time-since-the-hold-ended, not the raw
+// phase clock, or it would appear IMPACT_HOLD seconds too early (right at
+// phaseFor ~ 1.0) instead of ~1s after the resolution itself begins.
+describe("restart affordance timing relative to the impact hold", () => {
+  for (const viewport of VIEWPORTS) {
+    for (const phase of PHASES) {
+      it(`draws no restart cue until roughly one second past the hold ("${phase}", ${viewport.width}x${viewport.height})`, () => {
+        // Just past the hold, but well under a second into the resolution:
+        // raw phaseFor is already > 1.0, which would show the restart cue
+        // if its timing were wired to the raw clock instead of
+        // phaseFor - IMPACT_HOLD.
+        const stillHidden = countingMockCtx();
+        drawEndScreen(stillHidden.ctx, makeState(phase, IMPACT_HOLD + 0.5, 600), viewport);
+
+        // Comfortably past one second into the resolution itself.
+        const nowVisible = countingMockCtx();
+        drawEndScreen(nowVisible.ctx, makeState(phase, IMPACT_HOLD + 1.4, 600), viewport);
+
+        // The restart cue (and its connector stem) are extra draw calls on
+        // top of everything else in the composition, so once it appears the
+        // call count must be strictly higher than the identical scene
+        // without it.
+        expect(nowVisible.counts.total).toBeGreaterThan(stillHidden.counts.total);
+      });
+    }
   }
 });
 

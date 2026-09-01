@@ -150,7 +150,10 @@ const trace = await page.evaluate(() => {
 });
 say("committed strokes: " + JSON.stringify(trace.strokes));
 const end = await read();
-await shot(end.phase === "won" ? "04-won" : "04-lost");
+// Capture during the impact hold, then again once the end screen has settled.
+await shot(end.phase === "won" ? "04a-impact-won" : "04a-impact-lost");
+await page.waitForTimeout(2200);
+await shot(end.phase === "won" ? "04b-screen-won" : "04b-screen-lost");
 say(`FINAL: phase=${end.phase} x=${end.x.toFixed(0)}/${end.finishX} ink=${end.ink.toFixed(0)} strokes=${end.strokes} elapsed=${end.elapsed.toFixed(1)}s`);
 say("last samples:\n" + samples.slice(-22).join("\n"));
 say(`console errors: ${errors.length}${errors.length ? " -> " + errors.slice(0, 3).join(" | ") : ""}`);

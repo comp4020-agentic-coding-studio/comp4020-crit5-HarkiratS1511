@@ -12,7 +12,7 @@
 // what stops the parallax layers shimmering as the camera moves — the same
 // world x always produces the same silhouette.
 
-import type { Level, Stroke, Vec2 } from "./types";
+import type { Level, Segment, Stroke, Vec2 } from "./types";
 import { GROUND_SCREEN_FRACTION, PICKUP_RADIUS } from "./tuning";
 
 const PAPER = "#f4f1e8";
@@ -38,7 +38,7 @@ function hash(n: number): number {
 // Level identity: a small fixed set of background "moods". Each varies the
 // sky gradient's depth (value, not hue) and the silhouette family of the
 // nearer parallax layer, so arriving at a new level is visible at a glance.
-// The selector is total — any integer, including negatives, maps onto one
+// The selector is total — any integer, including negatives — maps onto one
 // of these — and wraps once the campaign runs past the defined set.
 // ---------------------------------------------------------------------------
 type SkylineShape = "hills" | "skyline" | "peaks" | "spires";
@@ -82,6 +82,17 @@ function paletteFor(levelIndex: number): Palette {
 // variant (distance flattens detail); the near layer carries the variant's
 // distinct character (rooftops, peaks, spires, dense hills) and scrolls
 // faster, which is what actually reads as depth.
+//
+// Both layers are built and filled as ONE continuous opaque path per layer —
+// never a series of individually-alpha'd shapes — so overlapping silhouette
+// features never double up into darker lens-shaped intersections. Each layer
+// carries exactly one flat value against the sky; depth comes from that value
+// differing layer to layer (distant pale and low-contrast, near darker and
+// more defined), never from alpha stacking within a layer.
+//
+// Both layers are generated purely from camera + viewport (never from the
+// level's ground data), so they always cover the full frame at any camera
+// position, including long before the level start or long past its end.
 // ---------------------------------------------------------------------------
 export function drawSky(
   ctx: CanvasRenderingContext2D,
@@ -122,7 +133,8 @@ export function drawSky(
 
 /** Distant, low-parallax rolling silhouette. A continuous sum-of-sines curve
  *  rather than tiles, so it stays smooth at any scale with no seams — reads
- *  as "far away" precisely because it has no crisp detail. */
+ *  as "far away" precisely because it has no crisp detail. One path, one
+ *  fill, spanning the full viewport width regardless of camera. */
 function drawFarHills(
   ctx: CanvasRenderingContext2D,
   w: number,
@@ -160,9 +172,177 @@ function drawFarHills(
   ctx.fill();
 }
 
-/** Nearer, faster-scrolling silhouette. Tiled deterministically from world
- *  x so the shapes are stable frame to frame; the shape family is what
- *  gives each level its distinct character. */
+/** Shared tile-index range for the tiled near-silhouette families (skyline,
+ *  peaks, spires): the smallest run of tiles that fully covers the visible
+ *  viewport at this camera + scale, capped so a huge camera excursion can
+ *  never blow up path complexity. Because this is derived purely from
+ *  camera/viewport/tileWorld (never from level bounds), the tiled layer
+ *  always spans the full frame, at any camera position. */
+function computeTileRange(worldCamera: number, viewWorldWidth: number, tileWorld: number): { startI: number; endI: number } | null {
+  let startI = Math.floor((worldCamera - tileWorld) / tileWorld);
+  let endI = Math.ceil((worldCamera + viewWorldWidth + tileWorld) / tileWorld);
+  const MAX_TILES = 240;
+  if (endI - startI > MAX_TILES) endI = startI + MAX_TILES;
+  if (!Number.isFinite(startI) || !Number.isFinite(endI)) return null;
+  return { startI, endI };
+}
+
+/** Continuous stepped-rooftop skyline: one walked polygon (up at a tile
+ *  boundary, across at the new height, up/down at the next boundary — never
+ *  a separate rect per building) plus the rare antenna as its own small
+ *  closed loop within the SAME path. The caller fills this once. */
+function buildSkylinePath(
+  ctx: CanvasRenderingContext2D,
+  startI: number,
+  endI: number,
+  tileWorld: number,
+  worldCamera: number,
+  scale: number,
+  baseY: number,
+  levelIndex: number
+): void {
+  const screenXAt = (i: number) => (i * tileWorld - worldCamera) * scale;
+  const antennas: { x: number; topY: number; h: number; w: number }[] = [];
+
+  ctx.moveTo(screenXAt(startI), baseY + 6);
+  for (let i = startI; i <= endI; i++) {
+    const seed = i * 7.13 + levelIndex * 31.7;
+    const r1 = hash(seed);
+    const r2 = hash(seed + 0.37);
+    const bh = baseY * (0.12 + r1 * 0.34);
+    const topY = baseY - bh;
+    const x0 = screenXAt(i);
+    const x1 = screenXAt(i + 1);
+    ctx.lineTo(x0, topY);
+    ctx.lineTo(x1, topY);
+    if (r2 > 0.75) {
+      antennas.push({ x: (x0 + x1) * 0.5, topY, h: baseY * 0.08, w: Math.max(1, (x1 - x0) * 0.02) });
+    }
+  }
+  ctx.lineTo(screenXAt(endI + 1), baseY + 6);
+  ctx.closePath();
+
+  for (const a of antennas) {
+    ctx.moveTo(a.x - a.w * 0.5, a.topY);
+    ctx.lineTo(a.x - a.w * 0.5, a.topY - a.h);
+    ctx.lineTo(a.x + a.w * 0.5, a.topY - a.h);
+    ctx.lineTo(a.x + a.w * 0.5, a.topY);
+    ctx.closePath();
+  }
+}
+
+/** Continuous mountain ridge: alternating peak/saddle, walked as a single
+ *  zigzag polyline rather than one triangle per tile, so neighbouring peaks
+ *  share an edge instead of overlapping. */
+function buildPeaksPath(
+  ctx: CanvasRenderingContext2D,
+  startI: number,
+  endI: number,
+  tileWorld: number,
+  worldCamera: number,
+  scale: number,
+  baseY: number,
+  levelIndex: number
+): void {
+  const screenXAt = (i: number) => (i * tileWorld - worldCamera) * scale;
+  ctx.moveTo(screenXAt(startI), baseY + 6);
+  for (let i = startI; i <= endI; i++) {
+    const seed = i * 7.13 + levelIndex * 31.7;
+    const r1 = hash(seed);
+    const ph = baseY * (0.18 + r1 * 0.42);
+    const x0 = screenXAt(i);
+    const x1 = screenXAt(i + 1);
+    ctx.lineTo((x0 + x1) * 0.5, baseY - ph);
+    ctx.lineTo(x1, baseY - ph * 0.15);
+  }
+  ctx.lineTo(screenXAt(endI + 1), baseY + 6);
+  ctx.closePath();
+}
+
+/** Continuous low band with sparse spike excursions poking up through it —
+ *  one walked silhouette, not one thin rect per spire, so spires never sit
+ *  as separate alpha'd shapes stacked on the band. */
+function buildSpiresPath(
+  ctx: CanvasRenderingContext2D,
+  startI: number,
+  endI: number,
+  tileWorld: number,
+  worldCamera: number,
+  scale: number,
+  baseY: number,
+  levelIndex: number
+): void {
+  const screenXAt = (i: number) => (i * tileWorld - worldCamera) * scale;
+  const bandY = baseY - baseY * 0.05;
+  ctx.moveTo(screenXAt(startI), baseY + 6);
+  ctx.lineTo(screenXAt(startI), bandY);
+  for (let i = startI; i <= endI; i++) {
+    const seed = i * 7.13 + levelIndex * 31.7;
+    const r1 = hash(seed);
+    const r2 = hash(seed + 0.37);
+    const x0 = screenXAt(i);
+    const x1 = screenXAt(i + 1);
+    const tileW = x1 - x0;
+    if (r2 > 0.5 && tileW > 0) {
+      const spikeX = x0 + tileW * (0.3 + r2 * 0.4);
+      const spikeH = baseY * (0.25 + r1 * 0.5);
+      const half = Math.max(1, tileW * 0.03);
+      ctx.lineTo(spikeX - half, bandY);
+      ctx.lineTo(spikeX, bandY - spikeH);
+      ctx.lineTo(spikeX + half, bandY);
+    }
+    ctx.lineTo(x1, bandY);
+  }
+  ctx.lineTo(screenXAt(endI + 1), baseY + 6);
+  ctx.closePath();
+}
+
+/** Continuous rolling hill silhouette: the same sum-of-sines family as the
+ *  far layer, but a different seed, higher frequency and amplitude, so it
+ *  reads as nearer and denser while remaining one smooth path — never the
+ *  separate overlapping ellipses this replaces. */
+function drawHillsSilhouette(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  baseY: number,
+  worldCamera: number,
+  scale: number,
+  levelIndex: number
+): void {
+  const amp = Math.max(6, baseY * 0.17);
+  const seedA = hash(levelIndex * 4.3 + 11) * Math.PI * 2;
+  const seedB = hash(levelIndex * 6.1 + 12) * Math.PI * 2;
+  const seedC = hash(levelIndex * 10.7 + 13) * Math.PI * 2;
+  const f1 = 0.006, f2 = 0.015, f3 = 0.032;
+  const steps = 64;
+
+  ctx.beginPath();
+  ctx.moveTo(0, baseY + 6);
+  for (let s = 0; s <= steps; s++) {
+    const sx = (s / steps) * w;
+    const wx = sx / scale + worldCamera;
+    const combined =
+      0.5 * Math.sin(wx * f1 + seedA) +
+      0.32 * Math.sin(wx * f2 + seedB) +
+      0.18 * Math.sin(wx * f3 + seedC);
+    const y = baseY - amp * ((combined + 1) * 0.5);
+    ctx.lineTo(sx, y);
+  }
+  ctx.lineTo(w, baseY + 6);
+  ctx.closePath();
+  ctx.fill();
+}
+
+/** Nearer, faster-scrolling silhouette. Built as ONE continuous path per
+ *  call — a single filled skyline spanning the viewport, with the layer's
+ *  near edge (its top boundary) as the skyline itself — then filled exactly
+ *  once at the variant's flat alpha. That single fill is what prevents any
+ *  intra-layer overlap from ever double-darkening: even where the walked
+ *  outline dips and rises against itself, the whole area is painted with one
+ *  paint operation, not a pile of separately-composited shapes. The shape
+ *  family (hills/skyline/peaks/spires) is what gives each level its distinct
+ *  character; tiled families are generated purely from camera + viewport, so
+ *  they always cover the full frame at any camera position. */
 function drawNearSilhouette(
   ctx: CanvasRenderingContext2D,
   w: number,
@@ -174,131 +354,175 @@ function drawNearSilhouette(
   shape: SkylineShape
 ): void {
   const parallax = 0.32;
-  const tileWorld = shape === "spires" ? 130 : shape === "skyline" ? 150 : shape === "peaks" ? 175 : 210;
   const worldCamera = camera * parallax;
   const viewWorldWidth = w / scale;
 
-  let startI = Math.floor((worldCamera - tileWorld) / tileWorld);
-  let endI = Math.ceil((worldCamera + viewWorldWidth + tileWorld) / tileWorld);
-  const MAX_TILES = 240;
-  if (endI - startI > MAX_TILES) endI = startI + MAX_TILES;
-  if (!Number.isFinite(startI) || !Number.isFinite(endI)) return;
-
   ctx.fillStyle = inkAlpha(alpha);
 
-  for (let i = startI; i <= endI; i++) {
-    const screenX = (i * tileWorld - worldCamera) * scale;
-    const tileW = tileWorld * scale;
-    if (tileW <= 0) continue;
-    const seed = i * 7.13 + levelIndex * 31.7;
-    const r1 = hash(seed);
-    const r2 = hash(seed + 0.37);
-
-    switch (shape) {
-      case "skyline": {
-        const bh = baseY * (0.12 + r1 * 0.34);
-        const bw = tileW * (0.55 + r2 * 0.35);
-        const bx = screenX + (tileW - bw) * 0.5;
-        ctx.fillRect(bx, baseY - bh, bw, bh + 8);
-        if (r2 > 0.7) {
-          ctx.fillRect(bx + bw * 0.4, baseY - bh - baseY * 0.08, Math.max(1, tileW * 0.03), baseY * 0.08);
-        }
-        break;
-      }
-      case "peaks": {
-        const ph = baseY * (0.18 + r1 * 0.42);
-        ctx.beginPath();
-        ctx.moveTo(screenX, baseY + 6);
-        ctx.lineTo(screenX + tileW * 0.5, baseY - ph);
-        ctx.lineTo(screenX + tileW, baseY + 6);
-        ctx.closePath();
-        ctx.fill();
-        break;
-      }
-      case "spires": {
-        const bh = baseY * (0.25 + r1 * 0.5);
-        const bw = Math.max(2, tileW * 0.12);
-        const bx = screenX + tileW * (0.3 + r2 * 0.4);
-        ctx.fillRect(bx, baseY - bh, bw, bh + 8);
-        if (r2 > 0.5) {
-          ctx.fillRect(bx + bw * 0.5 - 0.5, baseY - bh - baseY * 0.15, 1, baseY * 0.15);
-        }
-        break;
-      }
-      case "hills":
-      default: {
-        const bh = baseY * (0.1 + r1 * 0.22);
-        const bw = tileW * 1.15;
-        const cx = screenX + tileW * 0.5;
-        ctx.beginPath();
-        ctx.ellipse(cx, baseY, bw * 0.5, bh, 0, 0, Math.PI * 2);
-        ctx.fill();
-        break;
-      }
-    }
+  if (shape === "hills") {
+    drawHillsSilhouette(ctx, w, baseY, worldCamera, scale, levelIndex);
+    return;
   }
+
+  const tileWorld = shape === "spires" ? 130 : shape === "skyline" ? 150 : 175; // peaks
+  const range = computeTileRange(worldCamera, viewWorldWidth, tileWorld);
+  if (!range) return;
+  const { startI, endI } = range;
+
+  ctx.beginPath();
+  if (shape === "skyline") {
+    buildSkylinePath(ctx, startI, endI, tileWorld, worldCamera, scale, baseY, levelIndex);
+  } else if (shape === "peaks") {
+    buildPeaksPath(ctx, startI, endI, tileWorld, worldCamera, scale, baseY, levelIndex);
+  } else {
+    buildSpiresPath(ctx, startI, endI, tileWorld, worldCamera, scale, baseY, levelIndex);
+  }
+  ctx.fill();
 }
 
 // ---------------------------------------------------------------------------
-// Ground: a filled ink mass, not a hairline. Every segment is filled from its
-// top edge down through a generous depth so it reads as substance underfoot;
-// a gap between segments is therefore an unmistakable hole in that mass, not
-// just a missing line. Exposed ends (every gap lip) get an emphasised
-// vertical cut, visible well before the runner reaches it.
+// Ground: a filled ink mass, not a hairline. Segments that connect end to end
+// (the new rolling-slope levels: a run of ramps sharing endpoints) are walked
+// as ONE continuous top-edge polyline and filled/stroked as a single mass —
+// no seam, no gap, no doubled stroke at a join, and the downward fill follows
+// the slope itself rather than one rectangle per segment. Only a genuine
+// horizontal break between two chains — an actual gap in the ground data —
+// gets the emphasised vertical cut; a join between connected slopes never
+// does, however sharp the angle.
+//
+// The outermost ends of the whole ground mass (the very first point of the
+// first chain, the very last point of the last chain) are extended flat, for
+// rendering only, far past where the level's own segment data ends. That is
+// what stops the world visibly running out past the finish (or before the
+// start): the ink mass always reaches the edge of the frame, at any camera
+// position, without inventing any collidable geometry or touching the Level.
 // ---------------------------------------------------------------------------
 const GROUND_FILL_DEPTH = 1200;
 
+/** World-px, comfortably beyond any camera's visible sightline (a few
+ *  hundred to ~1000 world px at the marked viewports — see tuning.ts's
+ *  MIN_SIGHTLINE). Extending the outer ends of the ground mass by this much
+ *  guarantees the fill still reaches both frame edges regardless of how far
+ *  before the start or past the finish the camera sits. */
+const GROUND_EDGE_EXTENSION = 6000;
+
+/** Slack, in world px, for treating one segment's end as "the same point" as
+ *  the next segment's start — i.e. connected, not a gap. */
+const CHAIN_JOIN_EPSILON = 0.5;
+
+/** Groups ground segments into chains of connected top-edge points. Segments
+ *  are sorted by their start x first so chain-building is order-independent;
+ *  within a chain, consecutive points share an endpoint (a slope run), so the
+ *  chain's own point list IS its continuous top edge. A gap between one
+ *  chain's last point and the next chain's first point is a real, visible
+ *  hole in the ground — never rendered as if it were connected. */
+function buildGroundChains(segments: Segment[]): Vec2[][] {
+  if (segments.length === 0) return [];
+  const sorted = [...segments].sort((a, b) => a.a.x - b.a.x);
+  const chains: Vec2[][] = [];
+  let current: Vec2[] = [sorted[0].a, sorted[0].b];
+  for (let i = 1; i < sorted.length; i++) {
+    const seg = sorted[i];
+    const prevEnd = current[current.length - 1];
+    const connected =
+      Math.abs(seg.a.x - prevEnd.x) < CHAIN_JOIN_EPSILON && Math.abs(seg.a.y - prevEnd.y) < CHAIN_JOIN_EPSILON;
+    if (connected) {
+      current.push(seg.b);
+    } else {
+      chains.push(current);
+      current = [seg.a, seg.b];
+    }
+  }
+  chains.push(current);
+  return chains;
+}
+
+/** The chain's top-edge points, with the outer ends of the WHOLE ground mass
+ *  (first point of the first chain, last point of the last chain) extended
+ *  flat by GROUND_EDGE_EXTENSION. Internal chain boundaries — real gaps — are
+ *  left exactly as they are. */
+function extendedChainPoints(chain: Vec2[], isFirstChain: boolean, isLastChain: boolean): Vec2[] {
+  const points = [...chain];
+  if (isFirstChain) {
+    const first = points[0];
+    points.unshift({ x: first.x - GROUND_EDGE_EXTENSION, y: first.y });
+  }
+  if (isLastChain) {
+    const last = points[points.length - 1];
+    points.push({ x: last.x + GROUND_EDGE_EXTENSION, y: last.y });
+  }
+  return points;
+}
+
 export function drawGround(ctx: CanvasRenderingContext2D, level: Level, scale: number): void {
   const safeScale = scale > 1e-6 ? scale : 1e-6;
+  const chains = buildGroundChains(level.groundSegments);
+  if (chains.length === 0) return;
 
   ctx.save();
-  ctx.fillStyle = INK;
 
-  for (const seg of level.groundSegments) {
+  // Fill: one continuous path per chain (world-edge extension included), the
+  // downward fill following the slope of the chain's own top edge rather
+  // than a rectangle per segment.
+  ctx.fillStyle = INK;
+  for (let c = 0; c < chains.length; c++) {
+    const points = extendedChainPoints(chains[c], c === 0, c === chains.length - 1);
+    const first = points[0];
+    const last = points[points.length - 1];
     ctx.beginPath();
-    ctx.moveTo(seg.a.x, seg.a.y);
-    ctx.lineTo(seg.b.x, seg.b.y);
-    ctx.lineTo(seg.b.x, seg.b.y + GROUND_FILL_DEPTH);
-    ctx.lineTo(seg.a.x, seg.a.y + GROUND_FILL_DEPTH);
+    ctx.moveTo(first.x, first.y);
+    for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+    ctx.lineTo(last.x, last.y + GROUND_FILL_DEPTH);
+    ctx.lineTo(first.x, first.y + GROUND_FILL_DEPTH);
     ctx.closePath();
     ctx.fill();
   }
 
-  // Defined top edge: a confident stroke along the surface itself.
+  // Defined top edge: one confident continuous stroke per chain (extension
+  // included), so a run of connected slopes reads as a single smooth surface
+  // with no seam and no doubled stroke at a join.
   ctx.strokeStyle = INK;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   ctx.lineWidth = 4 / safeScale;
-  for (const seg of level.groundSegments) {
+  for (let c = 0; c < chains.length; c++) {
+    const points = extendedChainPoints(chains[c], c === 0, c === chains.length - 1);
     ctx.beginPath();
-    ctx.moveTo(seg.a.x, seg.a.y);
-    ctx.lineTo(seg.b.x, seg.b.y);
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
     ctx.stroke();
   }
 
   // A faint paper-toned crust line just under the surface gives the mass a
-  // sense of thickness rather than a single flat tone.
+  // sense of thickness rather than a single flat tone — one continuous
+  // offset polyline per chain, following the slope the same way.
   ctx.save();
   ctx.globalAlpha = 0.22;
   ctx.strokeStyle = PAPER;
   ctx.lineWidth = 1.5 / safeScale;
-  for (const seg of level.groundSegments) {
-    const dy = 7 / safeScale;
+  const dy = 7 / safeScale;
+  for (let c = 0; c < chains.length; c++) {
+    const points = extendedChainPoints(chains[c], c === 0, c === chains.length - 1);
     ctx.beginPath();
-    ctx.moveTo(seg.a.x, seg.a.y + dy);
-    ctx.lineTo(seg.b.x, seg.b.y + dy);
+    ctx.moveTo(points[0].x, points[0].y + dy);
+    for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y + dy);
     ctx.stroke();
   }
   ctx.restore();
 
-  // Gap-edge emphasis: every exposed end of the ink mass gets a bold vertical
-  // cut, so a hole reads as a deliberate break, not a rendering glitch.
+  // Gap-edge emphasis: only a genuine break between two chains — an actual
+  // hole in the ground data — gets the bold vertical cut. The two extended
+  // outer ends of the whole mass are not exposed (the fill keeps going past
+  // the frame edge), so they never get a cut; a join between connected
+  // slopes inside one chain was never a gap and never gets one either.
   ctx.strokeStyle = INK;
   ctx.lineCap = "round";
   ctx.lineWidth = 6 / safeScale;
   const tickLen = 22 / safeScale;
-  for (const seg of level.groundSegments) {
-    for (const p of [seg.a, seg.b]) {
+  for (let c = 0; c < chains.length - 1; c++) {
+    const rightEnd = chains[c][chains[c].length - 1];
+    const leftEnd = chains[c + 1][0];
+    for (const p of [rightEnd, leftEnd]) {
       ctx.beginPath();
       ctx.moveTo(p.x, p.y);
       ctx.lineTo(p.x, p.y + tickLen);

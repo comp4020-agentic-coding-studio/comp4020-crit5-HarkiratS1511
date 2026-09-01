@@ -7,6 +7,7 @@ import { inkCost } from "./ink";
 import { buildLevel } from "./level";
 import {
   CHASE_BAND_FAR,
+  CONTACT_TIGHTEN,
   CHASE_CRUISE,
   CHASE_SPRINT,
   CHASER_RADIUS,
@@ -214,7 +215,10 @@ export function step(state: GameState, dt: number, chaserDt: number = dt): void 
 
   const dx = state.runner.pos.x - state.chaser.pos.x;
   const dy = state.runner.pos.y - state.chaser.pos.y;
-  const reach = state.runner.radius + state.chaser.radius;
+  // Tightened: the silhouettes are narrower than their collision circles, so
+  // at the full summed radii the run ended with daylight still visible
+  // between them and the catch looked like it fired early.
+  const reach = (state.runner.radius + state.chaser.radius) * CONTACT_TIGHTEN;
   if (dx * dx + dy * dy <= reach * reach) return end(state, "lost");
 
   if (state.runner.pos.y - floor > FALL_KILL_DEPTH) return end(state, "lost");

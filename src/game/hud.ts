@@ -10,9 +10,16 @@
 //      vs. dark) and immediate enough to be self-teaching on first touch.
 //   3. Composed, animated win/lose screens with a wordless restart cue,
 //      because the previous build simply stopped with no resolution and no
-//      way back in.
+//      way back in. Two playtest-driven fixes live here too: an "impact
+//      hold" (IMPACT_HOLD, tuning.ts) during which drawEndScreen draws
+//      nothing at all, so the player actually sees the catch or the fall
+//      before the resolution covers it; and a full-frame composition (frame
+//      brackets, an anchor band, a connector stem) so the resolution reads
+//      as a deliberate screen anchored to the viewport, not a shape
+//      floating in whatever the camera happens to be looking at.
 
 import type { GameState } from "./types";
+import { IMPACT_HOLD } from "./tuning";
 
 const PAPER = "#f4f1e8";
 const INK = "#1a1a2e";
@@ -261,6 +268,112 @@ export function restartAffordance(phaseFor: number): { opacity: number; scale: n
   return { opacity, scale };
 }
 
+// ---------------------------------------------------------------------------
+// Frame brackets: four L-shaped marks anchored to the viewport's own
+// corners, never to anything in the world. This is the difference between a
+// shape floating in whatever the camera happens to be looking at and a
+// SCREEN: the brackets exist purely in screen space, at fixed margins from
+// the real edges, so they read as a deliberate frame over a busy scene
+// exactly as much as over empty sky — they never touch or depend on either.
+// ---------------------------------------------------------------------------
+function drawFrameBrackets(
+  ctx: CanvasRenderingContext2D,
+  viewport: { width: number; height: number },
+  color: string,
+  growth: number,
+  alpha: number
+): void {
+  const g = clamp01(growth);
+  if (g <= 0 || alpha <= 0) return;
+  const { width: w, height: h } = viewport;
+  const unit = Math.min(w, h);
+  const margin = unit * 0.05;
+  const arm = unit * 0.13 * easeOutCubic(g);
+  if (arm <= 0) return;
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = color;
+  ctx.lineCap = "round";
+  ctx.lineWidth = Math.max(1, unit * 0.01);
+
+  const corners: Array<[number, number, number, number]> = [
+    [margin, margin, 1, 1], // top-left
+    [w - margin, margin, -1, 1], // top-right
+    [margin, h - margin, 1, -1], // bottom-left
+    [w - margin, h - margin, -1, -1], // bottom-right
+  ];
+  for (const [x, y, dx, dy] of corners) {
+    ctx.beginPath();
+    ctx.moveTo(x + dx * arm, y);
+    ctx.lineTo(x, y);
+    ctx.lineTo(x, y + dy * arm);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// Anchor band: a full-width line through the resolution's own centre,
+// growing outward from the middle to the edges. It gives the ring/mass a
+// horizontal structure to sit on — a "third" of the frame claimed on
+// purpose — instead of a shape adrift with nothing else in frame to relate
+// it to.
+// ---------------------------------------------------------------------------
+function drawAnchorBand(
+  ctx: CanvasRenderingContext2D,
+  viewport: { width: number; height: number },
+  cy: number,
+  growth: number,
+  color: string,
+  alpha: number
+): void {
+  const g = easeOutCubic(growth);
+  if (g <= 0 || alpha <= 0) return;
+  const { width: w, height: h } = viewport;
+  const halfW = (w / 2) * g;
+  ctx.save();
+  ctx.globalAlpha = alpha * g;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = Math.max(1, Math.min(w, h) * 0.0035);
+  ctx.beginPath();
+  ctx.moveTo(w / 2 - halfW, cy);
+  ctx.lineTo(w / 2 + halfW, cy);
+  ctx.stroke();
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// Connector stem: a faint dashed thread from the main mark down to the
+// restart cue, fading in with it. Without this the restart affordance is a
+// second, unrelated circle sitting below the first; with it, the two are
+// visibly one composition — a spine running down the frame — rather than a
+// spare shape the player has to notice separately.
+// ---------------------------------------------------------------------------
+function drawConnectorStem(
+  ctx: CanvasRenderingContext2D,
+  viewport: { width: number; height: number },
+  fromY: number,
+  toY: number,
+  color: string,
+  alpha: number
+): void {
+  if (alpha <= 0 || toY <= fromY) return;
+  const { width: w, height: h } = viewport;
+  const unit = Math.min(w, h);
+  const cx = w / 2;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = Math.max(1, unit * 0.004);
+  ctx.setLineDash([unit * 0.012, unit * 0.014]);
+  ctx.beginPath();
+  ctx.moveTo(cx, fromY);
+  ctx.lineTo(cx, toY);
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawRestart(
   ctx: CanvasRenderingContext2D,
   phaseFor: number,
@@ -292,34 +405,68 @@ function drawRestart(
 }
 
 // ---------------------------------------------------------------------------
-// A heavy, spiky mass — an amplified relative of the chaser's own silhouette
-// — that slams down and comes to rest for the loss screen. It is given NO
-// motion once it reaches full size: final means final, and stillness is
-// what tells "lost" apart from the win screen's gentle, ongoing breathing.
+// The chaser, looming. The first version of this was a giant spiky blob — an
+// "amplified relative" of the chaser's silhouette — and at end-screen scale it
+// read as a cartoon creature rather than as menace. What actually says "it got
+// you", without a word, is the thing that got you: the real chaser figure,
+// drawn large and still, filling the frame it just took.
+//
+// Deliberately motionless once it arrives. Final means final, and stillness is
+// what separates losing from the win screen's slow breathing.
 // ---------------------------------------------------------------------------
-function drawHeavyMass(ctx: CanvasRenderingContext2D, cx: number, cy: number, radius: number): void {
-  if (radius <= 0) return;
+function drawLoomingChaser(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  baseY: number,
+  height: number,
+): void {
+  if (height <= 0) return;
+  const u = height / 5.2; // limb unit, as a fraction of overall height
   ctx.save();
   ctx.fillStyle = INK;
+  ctx.strokeStyle = INK;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
 
+  const hipY = baseY - u * 2.0;
+  const shoulderY = hipY - u * 1.5;
+  const lean = 0.30;
+  const leanX = (y: number): number => cx + (baseY - y) * lean;
+
+  const limb = (
+    x1: number, y1: number, x2: number, y2: number, x3: number, y3: number, w: number,
+  ): void => {
+    ctx.lineWidth = w;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.lineTo(x3, y3);
+    ctx.stroke();
+  };
+
+  // Legs braced wide, mid-stride: caught, not walking.
+  limb(leanX(hipY) - u * 0.1, hipY, cx - u * 0.85, hipY + u * 1.1, cx - u * 1.15, baseY, u * 0.42);
+  limb(leanX(hipY) + u * 0.1, hipY, cx + u * 0.7, hipY + u * 1.2, cx + u * 1.0, baseY, u * 0.42);
+
+  // Torso: heavy, pitched forward.
+  ctx.lineWidth = u * 0.95;
   ctx.beginPath();
-  ctx.ellipse(cx, cy + radius * 0.1, radius * 1.15, radius * 0.8, 0, 0, Math.PI * 2);
+  ctx.moveTo(leanX(hipY), hipY);
+  ctx.lineTo(leanX(shoulderY), shoulderY);
+  ctx.stroke();
+
+  // Long arms, reaching for the viewer.
+  limb(leanX(shoulderY), shoulderY, leanX(shoulderY) + u * 1.0, shoulderY + u * 0.5,
+       leanX(shoulderY) + u * 1.9, shoulderY + u * 0.15, u * 0.34);
+  limb(leanX(shoulderY), shoulderY, leanX(shoulderY) + u * 0.8, shoulderY + u * 0.85,
+       leanX(shoulderY) + u * 1.6, shoulderY + u * 0.95, u * 0.34);
+
+  // Head, low and forward on the shoulders.
+  const headY = shoulderY - u * 0.5;
+  ctx.beginPath();
+  ctx.ellipse(leanX(headY) + u * 0.18, headY, u * 0.5, u * 0.44, 0.2, 0, Math.PI * 2);
   ctx.fill();
 
-  const spikeCount = 7;
-  const spikeSpan = radius * 1.9;
-  ctx.beginPath();
-  for (let i = 0; i < spikeCount; i++) {
-    const frac = i / (spikeCount - 1);
-    const sx = cx - spikeSpan / 2 + spikeSpan * frac;
-    const baseY = cy - radius * 0.5;
-    const half = spikeSpan / (spikeCount * 2);
-    ctx.moveTo(sx - half, baseY);
-    ctx.lineTo(sx, baseY - radius * 0.6);
-    ctx.lineTo(sx + half, baseY);
-  }
-  ctx.closePath();
-  ctx.fill();
   ctx.restore();
 }
 
@@ -330,6 +477,13 @@ function drawHeavyMass(ctx: CanvasRenderingContext2D, cx: number, cy: number, ra
 // not a repeating flourish. A small filled core sits at the centre from the
 // very start, so even the first instant already reads as "something calm is
 // here" rather than nothing.
+//
+// The ring alone used to read as a stray shape adrift in whatever the camera
+// was looking at. It is now the centrepiece of a full-frame composition:
+// corner brackets claim the screen's own edges, a horizontal band gives the
+// ring a "third" of the frame to sit on, and a soft bloom gives it weight
+// beyond a hairline. All of it is anchored to viewport fractions, never to
+// world content, so it composes the same over a busy scene or empty sky.
 // ---------------------------------------------------------------------------
 function drawWon(
   ctx: CanvasRenderingContext2D,
@@ -338,7 +492,9 @@ function drawWon(
 ): void {
   const { width: w, height: h } = viewport;
   const unit = Math.min(w, h);
-  const t = Math.max(0, state.phaseFor);
+  // Animate from the moment the impact hold ends, not from the raw phase
+  // clock, so the entrance still starts from zero after the hold.
+  const t = Math.max(0, state.phaseFor - IMPACT_HOLD);
   const cx = w / 2;
   const cy = h * 0.42;
 
@@ -351,12 +507,33 @@ function drawWon(
   ctx.fillRect(0, 0, w, h);
   ctx.restore();
 
+  // Screen ownership: brackets at the frame's own corners, and a band the
+  // ring sits on — the composition, not just the ring.
+  drawFrameBrackets(ctx, viewport, INK, washP, 0.5 * washP);
+  drawAnchorBand(ctx, viewport, cy, washP, INK, 0.14);
+
   const settleAt = 0.85;
   const growP = easeOutCubic(t / settleAt);
   const breathe = t > settleAt ? Math.sin(((t - settleAt) * Math.PI * 2) / 3.4) : 0;
   const baseRadius = unit * 0.3;
   const radius = Math.max(0, baseRadius * growP * (1 + 0.025 * breathe));
   const ringAlpha = Math.max(0, lerp(0.85, 0.32, growP) + breathe * 0.03);
+
+  // A soft bloom behind the ring gives it weight — a mark with presence,
+  // not a bare outline sitting in whatever is behind it.
+  if (radius > 0) {
+    ctx.save();
+    const bloomR = radius * 1.5;
+    const bloom = ctx.createRadialGradient(cx, cy, 0, cx, cy, bloomR);
+    bloom.addColorStop(0, "rgba(26,26,46,0.10)");
+    bloom.addColorStop(1, "rgba(26,26,46,0)");
+    ctx.globalAlpha = growP;
+    ctx.fillStyle = bloom;
+    ctx.beginPath();
+    ctx.arc(cx, cy, bloomR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
 
   ctx.save();
   ctx.globalAlpha = ringAlpha;
@@ -375,6 +552,18 @@ function drawWon(
   ctx.fill();
   ctx.restore();
 
+  // Tie the restart cue into the same composition with a faint spine
+  // running down from the ring, rather than leaving it as a second, spare
+  // circle with nothing between it and the first.
+  const restart = restartAffordance(t);
+  drawConnectorStem(
+    ctx,
+    viewport,
+    cy + baseRadius * 1.05,
+    h * 0.76 - unit * 0.08,
+    INK,
+    restart.opacity * 0.5
+  );
   drawRestart(ctx, t, viewport, INK);
 }
 
@@ -384,6 +573,13 @@ function drawWon(
 // spiky mass — the thing that caught the runner — slams down at centre a
 // beat later and then sits dead still. Motionlessness is deliberate: the win
 // screen breathes, the loss screen does not.
+//
+// The flood already covers the full frame, so unlike the win screen this was
+// never literally "adrift" — but it still needs the same screen-owned
+// language: brackets clamping down at the frame's own corners (in paper, so
+// they read against the dark), and a band the mass rests on, so the
+// composition is legible as a deliberate frame and not just a colour flood
+// with a blob in it.
 // ---------------------------------------------------------------------------
 function drawLost(
   ctx: CanvasRenderingContext2D,
@@ -392,7 +588,9 @@ function drawLost(
 ): void {
   const { width: w, height: h } = viewport;
   const unit = Math.min(w, h);
-  const t = Math.max(0, state.phaseFor);
+  // Animate from the moment the impact hold ends, not from the raw phase
+  // clock, so the entrance still starts from zero after the hold.
+  const t = Math.max(0, state.phaseFor - IMPACT_HOLD);
   const cx = w / 2;
   const cy = h * 0.42;
 
@@ -405,9 +603,24 @@ function drawLost(
   ctx.fillRect(0, 0, w, h);
   ctx.restore();
 
-  const massP = easeOutCubic((t - 0.08) / 0.42);
-  drawHeavyMass(ctx, cx, cy, unit * 0.24 * massP);
+  // Screen ownership, closing rather than opening: brackets clamp down fast
+  // in paper against the dark, same language as the win screen's corners.
+  drawFrameBrackets(ctx, viewport, PAPER, floodP, 0.55 * floodP);
+  drawAnchorBand(ctx, viewport, cy, floodP, PAPER, 0.1);
 
+  const massRadius = unit * 0.24;
+  const massP = easeOutCubic((t - 0.08) / 0.42);
+  drawLoomingChaser(ctx, cx, cy + massRadius * 0.95, massRadius * 2.1 * massP);
+
+  const restart = restartAffordance(t);
+  drawConnectorStem(
+    ctx,
+    viewport,
+    cy + massRadius * 0.9,
+    h * 0.76 - unit * 0.08,
+    PAPER,
+    restart.opacity * 0.5
+  );
   drawRestart(ctx, t, viewport, PAPER);
 }
 
@@ -416,12 +629,20 @@ function drawLost(
  * `state.phase === "running"` — there is nothing to resolve yet. Entirely
  * driven by `state.phaseFor`, so it is deterministic and safe to call every
  * frame; nothing here reads the clock.
+ *
+ * While `state.phaseFor < IMPACT_HOLD` this issues NO drawing calls
+ * whatsoever — not even a `save`/`restore` — so the frozen world (the
+ * chaser's catch, or the drop into the gap) stays visible and unobscured
+ * for that whole hold. The resolution itself, once it starts, animates from
+ * `state.phaseFor - IMPACT_HOLD`, so its own entrance still begins at zero.
  */
 export function drawEndScreen(
   ctx: CanvasRenderingContext2D,
   state: GameState,
   viewport: { width: number; height: number }
 ): void {
+  if (state.phaseFor < IMPACT_HOLD) return;
+
   ctx.save();
   try {
     if (state.phase === "won") drawWon(ctx, state, viewport);

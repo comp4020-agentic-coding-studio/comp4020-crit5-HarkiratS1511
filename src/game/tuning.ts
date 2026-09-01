@@ -111,3 +111,16 @@ export const CHASE_SPRINT = 1.2;
  *  second stroke of the game was fatal. At this scale a stroke costs about a
  *  third of that, and clean running between gaps genuinely repays it. */
 export const CHASE_DRAW_SCALE = 0.45;
+
+/** Seconds the frozen world stays visible after a run ends, before the end
+ *  screen begins. Without it the losing overlay flooded the frame inside a
+ *  tenth of a second and the player never saw the chaser actually reach them,
+ *  so the death read as arbitrary and early. The simulation is already stopped
+ *  during this hold, so it is purely the moment of contact, held. */
+export const IMPACT_HOLD = 0.55;
+
+/** Contact is judged at this fraction of the summed collision radii. The
+ *  drawn bodies are narrower than their collision circles, so touching at the
+ *  full sum registered while a visible sliver of daylight remained between
+ *  them. */
+export const CONTACT_TIGHTEN = 0.72;
