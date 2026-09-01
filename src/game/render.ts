@@ -2,7 +2,7 @@
 // (bodies), scenery.ts (world) and hud.ts (bar and end screens); this module
 // decides only what goes down in what order, and where the camera looks.
 
-import type { GameState, PointerState, Vec2 } from "./types";
+import type { GameState, PointerState, Stroke, Vec2 } from "./types";
 import { GROUND_SCREEN_FRACTION, MIN_SIGHTLINE, REFERENCE_HEIGHT } from "./tuning";
 import { drawChaser, drawGhost, drawRunner } from "./figures";
 import { drawFinish, drawGround, drawPickups, drawSky, drawStrokes } from "./scenery";
@@ -75,6 +75,7 @@ export function render(
   if (slowmo) drawSlowmoWash(ctx, viewport);
 
   world();
+  drawDemoStroke(ctx, state, scale);
   drawLivePreview(ctx, pointer, scale);
   drawNib(ctx, pointer, scale, slowmo);
   ctx.restore();
@@ -155,6 +156,114 @@ function drawNib(
     // A bead of ink at the tip while it is actually painting.
     ctx.beginPath();
     ctx.arc(0, u * 0.22, u * 0.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+
+/** The first gap the player must actually solve: found from segment endpoints
+ *  rather than by scanning, and skipping any gap the pre-drawn teaching stub
+ *  already spans. Demonstrating the notch would be pointless — it is already
+ *  bridged, and the runner is past it before the ghost has finished falling. */
+function firstUnbridgedGap(
+  segs: { a: Vec2; b: Vec2 }[],
+  stub: Stroke | null,
+): { from: Vec2; to: Vec2 } | null {
+  const sorted = [...segs].sort((p, q) => p.a.x - q.a.x);
+  const spans = (from: number, to: number): boolean => {
+    if (!stub || stub.points.length < 2) return false;
+    const xs = stub.points.map((p) => p.x);
+    return Math.min(...xs) <= from + 2 && Math.max(...xs) >= to - 2;
+  };
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const from = sorted[i].b;
+    const to = sorted[i + 1].a;
+    if (to.x - from.x > 1 && !spans(from.x, to.x)) return { from, to };
+  }
+  return null;
+}
+
+/** The wordless tutorial, and the only thing that ever names the verb.
+ *
+ *  The ghost teaches the stakes by falling into the first gap; nothing taught
+ *  the player what to DO about it, and the playtester confirmed the opening
+ *  gave them no reason to press and drag. So once the ghost is gone, a
+ *  ghosted brush traces the answer across that same gap, leaving a line that
+ *  fades: the problem, then the solution, shown rather than told. It loops
+ *  until the player draws anything at all, and never returns after that.
+ *
+ *  The spec forbids instructions "anywhere, on screen or off", so this has to
+ *  carry the whole lesson without a word — which is exactly why it is a
+ *  demonstration and not a caption. */
+function drawDemoStroke(
+  ctx: CanvasRenderingContext2D,
+  state: GameState,
+  scale: number,
+): void {
+  if (state.levelIndex !== 0 || state.strokes.length > 0) return;
+  if (state.phase !== "running") return;
+  const gap = firstUnbridgedGap(state.level.groundSegments, state.level.stub);
+  if (!gap) return;
+
+  // Only once the player can see the gap, and only after the ghost has had
+  // its moment — being shown the answer before the problem teaches nothing.
+  const reach = gap.from.x - state.runner.pos.x;
+  if (reach > 620 || reach < -40) return;
+  if (state.ghost && state.ghost.goneFor === 0) return;
+
+  const CYCLE = 2.6;
+  const phase = (state.elapsed % CYCLE) / CYCLE;
+  const draw = Math.min(1, phase / 0.55); // trace, then hold, then restart
+  if (phase > 0.92) return;
+
+  const lift = Math.min(70, (gap.to.x - gap.from.x) * 0.42 + 22);
+  const at = (u: number): Vec2 => ({
+    x: gap.from.x - 10 + (gap.to.x - gap.from.x + 20) * u,
+    y: gap.from.y + (gap.to.y - gap.from.y) * u - Math.sin(u * Math.PI) * lift - 4,
+  });
+
+  const fade = phase < 0.55 ? 1 : 1 - (phase - 0.55) / 0.37;
+  ctx.save();
+  ctx.globalAlpha = 0.44 * fade;
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 5 / scale + 2;
+  ctx.lineCap = "round";
+  ctx.setLineDash([14 / scale, 10 / scale]);
+  ctx.beginPath();
+  const p0 = at(0);
+  ctx.moveTo(p0.x, p0.y);
+  for (let i = 1; i <= 24; i++) {
+    const u = (i / 24) * draw;
+    const p = at(u);
+    ctx.lineTo(p.x, p.y);
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // The brush itself, riding the head of the stroke, so the mark is visibly
+  // being MADE by the same tool sitting under the player's own cursor.
+  if (draw < 1) {
+    const head = at(draw);
+    ctx.globalAlpha = 0.66 * fade;
+    ctx.translate(head.x, head.y);
+    ctx.rotate(-0.42);
+    const u = 13 / scale;
+    ctx.fillStyle = INK;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.quadraticCurveTo(-u * 0.34, -u * 0.5, -u * 0.26, -u * 1.05);
+    ctx.lineTo(u * 0.26, -u * 1.05);
+    ctx.quadraticCurveTo(u * 0.34, -u * 0.5, 0, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillRect(-u * 0.26, -u * 1.32, u * 0.52, u * 0.2);
+    ctx.beginPath();
+    ctx.moveTo(-u * 0.22, -u * 1.32);
+    ctx.lineTo(-u * 0.12, -u * 2.4);
+    ctx.lineTo(u * 0.12, -u * 2.4);
+    ctx.lineTo(u * 0.22, -u * 1.32);
+    ctx.closePath();
     ctx.fill();
   }
   ctx.restore();
