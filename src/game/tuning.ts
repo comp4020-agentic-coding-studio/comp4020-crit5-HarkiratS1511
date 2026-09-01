@@ -15,7 +15,10 @@ export const MIN_SIGHTLINE = 700;
  *  looked composed at one marked viewport and broken at the other. */
 export const GROUND_SCREEN_FRACTION = 0.72;
 
-export const RUN_SPEED = 260;        // px/s, constant and scripted
+// Slowed from 260. The old pace read as one flat sprint with no beats, made
+// the ballistic range long enough that downhill gaps cost no ink at all, and
+// left no room for the chaser to sit close without being lethal.
+export const RUN_SPEED = 185;        // px/s, constant and scripted
 // Raised from 1500 after auditing the built game: at 1500 the ballistic range
 // was long enough that five of eight gaps could be cleared with no ink at all,
 // and ramp launches carried even further — so most gaps were not the
@@ -28,18 +31,25 @@ export const RUNNER_RADIUS = 12;
 // Well under RUN_SPEED: running must build a cushion big enough to spend on
 // thinking. At 232 the cushion grew by only 28px/s and the whole skill window
 // was half a second per stroke — measured, not guessed.
-export const CHASER_SPEED = 170;     // px/s
+// Just under RUN_SPEED. Clean running regains ground slowly, drawing
+// surrenders it, and a well-angled launch is the real recovery. Close enough
+// that the chaser is on screen and meant.
+export const CHASER_SPEED = 172;     // px/s
 export const CHASER_RADIUS = 16;
 
-export const MAX_INK = 900;          // px of line the player may draw in total
+// Raised from 1150. At 1150 the levels demanded near-optimal drawing: the
+// minimum possible line set left 5-7% slack, and a scripted player drawing
+// only 16px wider per gap than theoretical ran dry on every level. A person
+// draws nowhere near the minimum.
+export const MAX_INK = 1450;         // px of line the player may draw in total
 export const INK_PER_PIXEL = 1;      // cost = polyline length * this
-export const PICKUP_AMOUNT = 220;
-export const PICKUP_RADIUS = 18;
+export const PICKUP_AMOUNT = 260;
+export const PICKUP_RADIUS = 26;
 
 /** Time scale while the pointer is held. The chaser is exempt (it walks in
  *  real time), so this is purely the price of thinking: lower means finer
  *  drawing control but more ground surrendered per second held. */
-export const SLOWMO_SCALE = 0.35;
+export const SLOWMO_SCALE = 0.16;
 
 /** Minimum pointer travel before a new point is appended to a stroke. Keeps
  *  polylines cheap and stops jitter inflating ink cost. */
@@ -51,7 +61,7 @@ export const STROKE_POINT_SPACING = 6;
  *  until the chaser arrives — which reads as the game breaking, not as a
  *  mistake the player made. Generous enough to forgive a wobble, too small
  *  to climb a deliberate wall. */
-export const STEP_UP_MAX = 16;
+export const STEP_UP_MAX = 7;
 
 /** Falling below this many px under the lowest ground is a loss. Kept small
  *  deliberately: at 400 the runner died far below the view and the losing
@@ -59,3 +69,45 @@ export const STEP_UP_MAX = 16;
  *  in a game that is not allowed to explain itself in words. At this depth
  *  the fall is still legible on screen when it kills. */
 export const FALL_KILL_DEPTH = 90;
+
+/** No forward progress for this long, while grounded, means the runner has
+ *  wedged against something and is never getting out. It dies instead of
+ *  standing there waiting for the chaser, which the player reads as the game
+ *  hanging rather than as a mistake they made. */
+export const STUCK_SECONDS = 0.9;
+
+/** How far ahead of the player the demonstrating ghost begins. */
+export const GHOST_LEAD = 300;
+
+/** The chaser is held in a band behind the runner rather than run at a fixed
+ *  speed. A fixed speed cannot satisfy both halves of what a chase needs: fast
+ *  enough to stay on screen and be meant, and slow enough that the run is not
+ *  over in two strokes. Measured: at a flat 172px/s with a 170px head start,
+ *  a single 0.9s draw costs 128px, so the second draw was fatal.
+ *
+ *  Outside the band the chaser closes or eases to return to it. Inside it, it
+ *  simply runs. The band never applies while the player is drawing — slow
+ *  motion is real time for the chaser, with no reprieve — so sustained
+ *  dithering still kills, which is the whole point of it. */
+export const CHASE_BAND_FAR = 330;   // px: further than this, it sprints in
+
+/** Cruise speed as a fraction of RUN_SPEED, while the player is simply
+ *  running. Well under 1 so that clean running genuinely buys back the ground
+ *  a draw costs: at the old 172px/s the player regained 13px/s but surrendered
+ *  142px/s while drawing, so the sum could only ever go one way. */
+export const CHASE_CRUISE = 0.8;
+
+/** Sprint fraction, used only when it has fallen outside the band. This is
+ *  what stops it becoming the distant rumour the playtester never saw. */
+export const CHASE_SPRINT = 1.2;
+
+/** The chaser's own time scale while the player draws, against the world's
+ *  SLOWMO_SCALE. Higher than the world's, so the chaser visibly gains ground
+ *  during a draw; far below 1, so it does not devour the run.
+ *
+ *  Measured the hard way: with the chaser on FULL real time a 0.9s stroke cost
+ *  128px of ground while gaps sit ~250px apart, and level 2 has 26 gaps —
+ *  3300px surrendered over a level, which no cruise speed can buy back. The
+ *  second stroke of the game was fatal. At this scale a stroke costs about a
+ *  third of that, and clean running between gaps genuinely repays it. */
+export const CHASE_DRAW_SCALE = 0.45;

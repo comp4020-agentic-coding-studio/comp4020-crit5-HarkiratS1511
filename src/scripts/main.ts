@@ -1,9 +1,9 @@
 // Entry point: canvas setup, the fixed-timestep loop, and time dilation.
 
 import { attachInput } from "../game/input";
-import { buildLevel } from "../game/level";
+import { LEVEL_COUNT } from "../game/level";
 import { cameraFor, cameraYFor, render, worldScale } from "../game/render";
-import { SLOWMO_SCALE } from "../game/tuning";
+import { CHASE_DRAW_SCALE, SLOWMO_SCALE } from "../game/tuning";
 import type { GameState } from "../game/types";
 import { createState, step } from "../game/world";
 
@@ -14,7 +14,7 @@ function start(canvas: HTMLCanvasElement): void {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
 
-  let state: GameState = createState(buildLevel());
+  let state: GameState = createState(0);
   let viewport = { width: 0, height: 0 };
 
   const resize = (): void => {
@@ -37,8 +37,15 @@ function start(canvas: HTMLCanvasElement): void {
       cameraY: cameraYFor(state, viewport),
       scale: worldScale(viewport),
     }),
-    () => {
-      state = createState(buildLevel());
+    (force: boolean) => {
+      // Forced (Escape/R) always retries the level being played. Otherwise a
+      // press on the end screen advances after a win and retries after a
+      // loss, so the campaign moves without ever needing a menu.
+      if (force || state.phase === "lost") {
+        state = createState(state.levelIndex);
+      } else if (state.phase === "won") {
+        state = createState((state.levelIndex + 1) % LEVEL_COUNT);
+      }
     },
   );
 
@@ -75,12 +82,16 @@ function start(canvas: HTMLCanvasElement): void {
     // Slow motion while drawing. The runner's world crawls; the chaser does
     // not. Dividing the step back out by `slow` gives the chaser the real
     // seconds that elapsed, so thinking time is paid for in ground.
-    const slow = input.isDrawing() ? SLOWMO_SCALE : 1;
+    const drawing = input.isDrawing();
+    const slow = drawing ? SLOWMO_SCALE : 1;
+    // The chaser runs on its own, shallower dilation, so drawing costs ground
+    // without handing it the run.
+    const chaserScale = drawing ? CHASE_DRAW_SCALE : 1;
 
     accumulator += realDt * slow;
     let guard = 0;
     while (accumulator >= STEP && guard++ < 8) {
-      step(state, STEP, STEP / slow);
+      step(state, STEP, STEP * (chaserScale / slow));
       accumulator -= STEP;
     }
 

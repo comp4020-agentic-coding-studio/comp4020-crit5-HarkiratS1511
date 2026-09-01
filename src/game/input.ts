@@ -21,7 +21,7 @@ export function attachInput(
   canvas: HTMLCanvasElement,
   getState: () => GameState,
   getTransform: () => Transform,
-  onRestart: () => void,
+  onRestart: (force: boolean) => void,
 ): Input {
   const pointer: PointerState = { pos: { x: 0, y: 0 }, down: false, drawing: null };
 
@@ -38,7 +38,7 @@ export function attachInput(
     const state = getState();
     // A press during an ended run restarts, so the loop never needs a menu.
     if (state.phase !== "running") {
-      onRestart();
+      onRestart(false);
       return;
     }
     canvas.setPointerCapture(e.pointerId);
@@ -75,8 +75,15 @@ export function attachInput(
     state.strokes.push(strokeFromPoints(affordable));
   };
 
-  const onKeyDown = (): void => {
-    if (getState().phase !== "running") onRestart();
+  const onKeyDown = (e: KeyboardEvent): void => {
+    // Escape and R bail out at ANY time, including mid-run. Without this a
+    // player who has wedged themselves, or simply wants another go, has no
+    // way out but to wait to be caught.
+    if (e.key === "Escape" || e.key.toLowerCase() === "r") {
+      onRestart(true);
+      return;
+    }
+    if (getState().phase !== "running") onRestart(false);
   };
 
   canvas.addEventListener("pointerdown", onPointerDown);

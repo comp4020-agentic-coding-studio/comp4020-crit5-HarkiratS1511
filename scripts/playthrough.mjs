@@ -44,6 +44,7 @@ const read = () => page.evaluate(() => {
   const s = d.state;
   return {
     phase: s.phase, ink: s.ink, maxInk: s.maxInk, elapsed: s.elapsed,
+    levelIndex: s.levelIndex, ghost: s.ghost ? { x: s.ghost.pos.x, y: s.ghost.pos.y, goneFor: s.ghost.goneFor } : null,
     x: s.runner.pos.x, y: s.runner.pos.y, grounded: s.runner.grounded,
     chaserX: s.chaser.pos.x, strokes: s.strokes.length,
     finishX: s.level.finishX, t: d.transform,
@@ -55,7 +56,7 @@ const shot = async (name) => { await page.screenshot({ path: join(OUT, TAG + nam
 
 const st0 = await read();
 await shot("01-opening");
-say(`opening: x=${st0.x.toFixed(0)} ink=${st0.ink} scale=${st0.t.scale} cam=${st0.t.camera.toFixed(0)}/${st0.t.cameraY.toFixed(0)}`);
+say(`opening: level=${st0.levelIndex} x=${st0.x.toFixed(0)} ink=${st0.ink.toFixed(0)} scale=${st0.t.scale.toFixed(3)} ghost=${st0.ghost ? `x=${st0.ghost.x.toFixed(0)}` : "none"}`);
 
 // Derive gaps from ground segments.
 const surfaceY = (x, ground) => {

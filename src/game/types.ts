@@ -30,6 +30,8 @@ export type Level = {
   startX: number;
   chaserStartX: number;
   finishX: number;
+  /** 0-based position in the campaign, for scenery variation and pacing. */
+  index: number;
   /** Ground surface y at the start, for spawn placement. */
   groundY: number;
   /** Pre-drawn teaching stub over a small notch near the start. */
@@ -43,13 +45,37 @@ export type Runner = {
   grounded: boolean;
 };
 
-export type Chaser = { pos: Vec2; radius: number };
+/** The chaser now moves under the same physics as the runner and collides with
+ *  player-drawn strokes, so it follows wherever the player goes. */
+export type Chaser = { pos: Vec2; vel: Vec2; radius: number; grounded: boolean };
+
+/** A translucent demonstrator that runs ahead at the start and falls into the
+ *  first gap in plain view. It collides with terrain only, never with strokes,
+ *  so it always falls — that fall is the game's opening lesson and the only
+ *  thing that tells the player anything is required of them. */
+export type Ghost = {
+  pos: Vec2;
+  vel: Vec2;
+  radius: number;
+  grounded: boolean;
+  /** Seconds since it fell out of the world; drives its fade. */
+  goneFor: number;
+};
 
 export type Phase = "running" | "won" | "lost";
 
 export type GameState = {
   runner: Runner;
   chaser: Chaser;
+  ghost: Ghost | null;
+  /** Which level of the campaign is being played. */
+  levelIndex: number;
+  /** Seconds since the phase last changed, for end-screen animation. */
+  phaseFor: number;
+  /** How long since the runner last beat its furthest-reached x. */
+  stuckFor: number;
+  /** Furthest x reached: the watermark stuck-detection measures against. */
+  progressX: number;
   strokes: Stroke[];
   ink: number;
   maxInk: number;
