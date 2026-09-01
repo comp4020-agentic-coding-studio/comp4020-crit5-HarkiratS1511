@@ -150,8 +150,16 @@ export const STALL_PROGRESS_EPS = 24;
 
 /** How tall a spike field stands above the ground it sits on. The runner's
  *  centre rides RUNNER_RADIUS above the surface, so anything taller than that
- *  cannot be walked through and must be drawn over. */
-export const SPIKE_HEIGHT = 30;
+ *  cannot be walked through and must be drawn over.
+ *
+ *  Lowered from 30: at 30 the field read as a wall blocking the lane rather
+ *  than a low obstacle to skim over, and felt like it was fighting the
+ *  player's forward motion rather than asking for a quick line. Every
+ *  clearing-line cost in level.ts's comments is computed FROM this constant
+ *  (2*hypot(100, SPIKE_HEIGHT+10) + width, see buildLevel1's comment), so
+ *  lowering it only makes every spike field slightly cheaper to clear — it
+ *  does not require re-deriving any level's ink budget. */
+export const SPIKE_HEIGHT = 18;
 
 /** Steepest drawn segment the chaser will treat as a surface, as rise/run.
  *  tan(55 degrees) ~ 1.43. Anything steeper is a wall, not a path, and the

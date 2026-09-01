@@ -7,9 +7,8 @@ import { GROUND_SCREEN_FRACTION, MIN_SIGHTLINE, REFERENCE_HEIGHT } from "./tunin
 import { drawChaser, drawGhost, drawRunner } from "./figures";
 import { drawFinish, drawGround, drawHazards, drawPickups, drawSky, drawStrokes } from "./scenery";
 import { drawEndScreen, drawInkBar, drawSlowmoWash } from "./hud";
-
-const INK = "#1a1a2e";
-const PAPER = "#f4f1e8";
+import { cameraDipOffset, drawScreenEffects, drawWorldEffects } from "./effects";
+import { at as tone, paletteFor, type Palette } from "./palette";
 
 /** Scale by height, dropped only as far as the minimum sightline demands.
  *  Exported so the pointer transform consumes the SAME scale the renderer
@@ -46,11 +45,15 @@ export function render(
   viewport: { width: number; height: number },
 ): void {
   const scale = worldScale(viewport);
-  const cameraY = cameraYFor(state, viewport);
+  // The landing dip belongs to the WORLD, not the HUD: it must move the sky
+  // and the ground together with everything standing on them, so it is
+  // folded into cameraY here rather than applied by the caller.
+  const cameraY = cameraYFor(state, viewport) + cameraDipOffset(state);
   const slowmo = pointer.down && state.phase === "running";
+  const palette = paletteFor(state.levelIndex);
 
   ctx.save();
-  drawSky(ctx, viewport, camera, scale, state.levelIndex);
+  drawSky(ctx, viewport, camera, scale, state.levelIndex, palette);
 
   const world = (): void => {
     ctx.save();
@@ -59,30 +62,35 @@ export function render(
   };
 
   world();
-  drawGround(ctx, state.level, scale);
-  drawHazards(ctx, state.level, state.elapsed);
-  drawPickups(ctx, state.level, state.elapsed);
-  drawStrokes(ctx, state.strokes, state.level.stub, scale);
-  drawFinish(ctx, state.level, state.elapsed);
-  if (state.ghost) drawGhost(ctx, state.ghost, state.ghostPhase);
-  drawChaser(ctx, state.chaser, state.chaserPhase);
-  drawRunner(ctx, state.runner, state.runPhase);
+  drawGround(ctx, state.level, scale, palette);
+  drawHazards(ctx, state.level, state.elapsed, palette);
+  drawPickups(ctx, state.level, state.elapsed, palette);
+  drawStrokes(ctx, state.strokes, state.level.stub, scale, palette);
+  drawFinish(ctx, state.level, state.elapsed, palette);
+  if (state.ghost) drawGhost(ctx, state.ghost, state.ghostPhase, palette);
+  drawChaser(ctx, state.chaser, state.chaserPhase, palette);
+  drawRunner(ctx, state.runner, state.runPhase, palette);
+  drawWorldEffects(ctx, state, scale);
   ctx.restore();
 
   // Slow motion pales the WORLD, and only the world: the wash goes down here,
   // then the live stroke and the nib are drawn over it, so the pen stays at
   // full strength while everything around it settles. Losing is the dark
   // signal; these two may never be mistakable for one another.
-  if (slowmo) drawSlowmoWash(ctx, viewport);
+  if (slowmo) drawSlowmoWash(ctx, viewport, palette);
+  // The chaser-proximity vignette is the OPPOSITE signal (danger, not
+  // thinking-time) and has to stay legible even while slow motion is also on
+  // screen, so it is drawn after the wash rather than folded into it.
+  drawScreenEffects(ctx, state, viewport, camera, cameraY, scale);
 
   world();
-  drawDemoStroke(ctx, state, scale);
-  drawLivePreview(ctx, pointer, scale);
-  drawNib(ctx, pointer, scale, slowmo);
+  drawDemoStroke(ctx, state, scale, palette);
+  drawLivePreview(ctx, pointer, scale, palette);
+  drawNib(ctx, pointer, scale, slowmo, palette);
   ctx.restore();
 
-  drawInkBar(ctx, state, viewport);
-  if (state.phase !== "running") drawEndScreen(ctx, state, viewport);
+  drawInkBar(ctx, state, viewport, palette);
+  if (state.phase !== "running") drawEndScreen(ctx, state, viewport, palette);
 
   ctx.restore();
 }
@@ -92,11 +100,12 @@ function drawLivePreview(
   ctx: CanvasRenderingContext2D,
   pointer: PointerState,
   scale: number,
+  palette: Palette,
 ): void {
   const pts = pointer.drawing;
   if (!pts || pts.length < 2) return;
   ctx.save();
-  ctx.strokeStyle = INK;
+  ctx.strokeStyle = tone(palette.ink, 1);
   ctx.lineWidth = 5 / scale + 2;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
@@ -117,6 +126,7 @@ function drawNib(
   pointer: PointerState,
   scale: number,
   engaged: boolean,
+  palette: Palette,
 ): void {
   const p: Vec2 = pointer.pos;
   const u = (engaged ? 17 : 14) / scale;
@@ -124,7 +134,7 @@ function drawNib(
   ctx.translate(p.x, p.y);
   // Tilted like a held brush, tip at the pointer position.
   ctx.rotate(-0.42);
-  ctx.fillStyle = INK;
+  ctx.fillStyle = tone(palette.ink, 1);
   ctx.lineJoin = "round";
 
   // Bristles: a soft wedge narrowing to the tip, splayed a little when in use.
@@ -139,9 +149,9 @@ function drawNib(
 
   // Ferrule: the metal band, drawn as a lighter notch so the brush reads as
   // two materials rather than one blob.
-  ctx.fillStyle = PAPER;
+  ctx.fillStyle = tone(palette.paper, 1);
   ctx.fillRect(-u * 0.28, -u * 1.28, u * 0.56, u * 0.2);
-  ctx.fillStyle = INK;
+  ctx.fillStyle = tone(palette.ink, 1);
   ctx.fillRect(-u * 0.3, -u * 1.34, u * 0.6, u * 0.1);
 
   // Handle, tapering away from the hand.
@@ -201,6 +211,7 @@ function drawDemoStroke(
   ctx: CanvasRenderingContext2D,
   state: GameState,
   scale: number,
+  palette: Palette,
 ): void {
   if (state.levelIndex !== 0 || state.strokes.length > 0) return;
   if (state.phase !== "running") return;
@@ -227,7 +238,7 @@ function drawDemoStroke(
   const fade = phase < 0.55 ? 1 : 1 - (phase - 0.55) / 0.37;
   ctx.save();
   ctx.globalAlpha = 0.44 * fade;
-  ctx.strokeStyle = INK;
+  ctx.strokeStyle = tone(palette.ink, 1);
   ctx.lineWidth = 5 / scale + 2;
   ctx.lineCap = "round";
   ctx.setLineDash([14 / scale, 10 / scale]);
@@ -250,7 +261,7 @@ function drawDemoStroke(
     ctx.translate(head.x, head.y);
     ctx.rotate(-0.42);
     const u = 13 / scale;
-    ctx.fillStyle = INK;
+    ctx.fillStyle = tone(palette.ink, 1);
     ctx.beginPath();
     ctx.moveTo(0, 0);
     ctx.quadraticCurveTo(-u * 0.34, -u * 0.5, -u * 0.26, -u * 1.05);
