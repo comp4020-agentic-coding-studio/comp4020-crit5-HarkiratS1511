@@ -6,6 +6,8 @@ import { resolveMovement, segmentsFromPolyline } from "./geometry";
 import { inkCost } from "./ink";
 import { buildLevel } from "./level";
 import {
+  STALL_PROGRESS_EPS,
+  CHASER_BREAK_SECONDS,
   CHASE_BAND_FAR,
   CONTACT_TIGHTEN,
   CHASE_CRUISE,
@@ -109,6 +111,8 @@ export function createState(levelIndex: number): GameState {
     phaseFor: 0,
     stuckFor: 0,
     progressX: level.startX,
+    chaserProgressX: chaser.pos.x,
+    chaserStuckFor: 0,
     level,
     elapsed: 0,
   };
@@ -177,7 +181,7 @@ export function step(state: GameState, dt: number, chaserDt: number = dt): void 
   // enough to keep resetting the timer, so it never fired either. Only real
   // forward progress clears it; a legitimate arc advances the watermark
   // throughout, so nothing in flight is ever killed by mistake.
-  if (state.runner.pos.x > state.progressX + 4) {
+  if (state.runner.pos.x > state.progressX + STALL_PROGRESS_EPS) {
     state.progressX = state.runner.pos.x;
     state.stuckFor = 0;
   } else {
@@ -200,7 +204,26 @@ export function step(state: GameState, dt: number, chaserDt: number = dt): void 
     : trail > CHASE_BAND_FAR
       ? RUN_SPEED * CHASE_SPRINT
       : RUN_SPEED * CHASE_CRUISE;
-  advance(state.chaser, chaseSpeed, surfaces, chaserDt);
+  // A wall of ink behind you used to pen the chaser in for good, leaving the
+  // rest of the course a stroll. It cannot be solved by geometry — the chaser
+  // collides with strokes exactly as the runner does, so anything that stops
+  // the runner stops it. Instead it loses patience: once blocked for
+  // CHASER_BREAK_SECONDS it ignores drawn ink entirely and walks through the
+  // wall, colliding with terrain alone until it is moving again. Your ink
+  // buys time, never safety.
+  const penned = state.chaserStuckFor > CHASER_BREAK_SECONDS;
+  advance(
+    state.chaser,
+    chaseSpeed,
+    penned ? terrainOnly(state.level) : surfaces,
+    chaserDt,
+  );
+  if (state.chaser.pos.x > state.chaserProgressX + STALL_PROGRESS_EPS) {
+    state.chaserProgressX = state.chaser.pos.x;
+    state.chaserStuckFor = 0;
+  } else {
+    state.chaserStuckFor += chaserDt;
+  }
   // It cannot be escaped by breaking the bridge behind you: if it falls out
   // of the world it re-emerges on solid ground and keeps coming.
   if (state.chaser.pos.y - floor > FALL_KILL_DEPTH) {

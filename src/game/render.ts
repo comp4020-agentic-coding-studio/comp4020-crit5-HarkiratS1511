@@ -9,6 +9,7 @@ import { drawFinish, drawGround, drawPickups, drawSky, drawStrokes } from "./sce
 import { drawEndScreen, drawInkBar, drawSlowmoWash } from "./hud";
 
 const INK = "#1a1a2e";
+const PAPER = "#f4f1e8";
 
 /** Scale by height, dropped only as far as the minimum sightline demands.
  *  Exported so the pointer transform consumes the SAME scale the renderer
@@ -106,7 +107,9 @@ function drawLivePreview(
 }
 
 /** The cursor is drawn, not native (CSS sets cursor:none), so it can be an
- *  instrument that visibly makes marks rather than an arrow. */
+ *  instrument that visibly makes marks rather than an arrow. A brush rather
+ *  than a pen nib: with no words anywhere to name the verb, the tool in your
+ *  hand has to look like something you paint with. */
 function drawNib(
   ctx: CanvasRenderingContext2D,
   pointer: PointerState,
@@ -114,19 +117,44 @@ function drawNib(
   engaged: boolean,
 ): void {
   const p: Vec2 = pointer.pos;
-  const s = (engaged ? 15 : 12) / scale;
+  const u = (engaged ? 17 : 14) / scale;
   ctx.save();
   ctx.translate(p.x, p.y);
+  // Tilted like a held brush, tip at the pointer position.
+  ctx.rotate(-0.42);
   ctx.fillStyle = INK;
+  ctx.lineJoin = "round";
+
+  // Bristles: a soft wedge narrowing to the tip, splayed a little when in use.
+  const splay = engaged ? 1.35 : 1;
   ctx.beginPath();
   ctx.moveTo(0, 0);
-  ctx.lineTo(-s * 0.42, -s * 1.5);
-  ctx.lineTo(s * 0.42, -s * 1.5);
+  ctx.quadraticCurveTo(-u * 0.34 * splay, -u * 0.5, -u * 0.26 * splay, -u * 1.05);
+  ctx.lineTo(u * 0.26 * splay, -u * 1.05);
+  ctx.quadraticCurveTo(u * 0.34 * splay, -u * 0.5, 0, 0);
   ctx.closePath();
   ctx.fill();
+
+  // Ferrule: the metal band, drawn as a lighter notch so the brush reads as
+  // two materials rather than one blob.
+  ctx.fillStyle = PAPER;
+  ctx.fillRect(-u * 0.28, -u * 1.28, u * 0.56, u * 0.2);
+  ctx.fillStyle = INK;
+  ctx.fillRect(-u * 0.3, -u * 1.34, u * 0.6, u * 0.1);
+
+  // Handle, tapering away from the hand.
+  ctx.beginPath();
+  ctx.moveTo(-u * 0.24, -u * 1.34);
+  ctx.lineTo(-u * 0.13, -u * 2.5);
+  ctx.lineTo(u * 0.13, -u * 2.5);
+  ctx.lineTo(u * 0.24, -u * 1.34);
+  ctx.closePath();
+  ctx.fill();
+
   if (engaged) {
+    // A bead of ink at the tip while it is actually painting.
     ctx.beginPath();
-    ctx.arc(0, s * 0.42, s * 0.3, 0, Math.PI * 2);
+    ctx.arc(0, u * 0.22, u * 0.2, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.restore();

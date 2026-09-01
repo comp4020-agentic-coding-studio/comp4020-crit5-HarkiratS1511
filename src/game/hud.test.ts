@@ -84,6 +84,8 @@ function makeState(phase: Phase, phaseFor: number, ink: number, maxInk = 1150): 
     phaseFor,
     stuckFor: 0,
     progressX: 0,
+    chaserProgressX: 0,
+    chaserStuckFor: 0,
     strokes: [],
     ink,
     maxInk,

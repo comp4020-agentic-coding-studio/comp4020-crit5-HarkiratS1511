@@ -76,6 +76,9 @@ export type GameState = {
   stuckFor: number;
   /** Furthest x reached: the watermark stuck-detection measures against. */
   progressX: number;
+  /** The chaser's own watermark and stall timer. A player can wall it in. */
+  chaserProgressX: number;
+  chaserStuckFor: number;
   strokes: Stroke[];
   ink: number;
   maxInk: number;

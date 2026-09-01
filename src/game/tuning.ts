@@ -124,3 +124,22 @@ export const IMPACT_HOLD = 0.55;
  *  full sum registered while a visible sliver of daylight remained between
  *  them. */
 export const CONTACT_TIGHTEN = 0.72;
+
+/** How long the chaser tolerates being blocked before it stops respecting the
+ *  player's ink and walks straight through it.
+ *
+ *  Found in playtest: because the chaser follows the player's drawn path, a
+ *  vertical stroke behind you walls it in permanently, and the rest of the
+ *  course can be walked at leisure. Since it collides with strokes exactly as
+ *  the runner does, anything that blocks the runner blocks it too — so the
+ *  fix cannot be geometric. It breaks through instead: your ink stops it for
+ *  a moment, never for good. */
+export const CHASER_BREAK_SECONDS = 1.1;
+
+/** Forward progress, in px, that clears a stall timer. Generous on purpose:
+ *  a body pinned against a wall bounces, and with a small epsilon that jitter
+ *  reads as progress and resets the very timer meant to catch it. Measured: a
+ *  penned chaser oscillated ~5px per frame and sat at 0.4-0.7s forever against
+ *  a 4px threshold. Anything genuinely moving covers well over 100px in a
+ *  stall window, so a coarse threshold costs nothing. */
+export const STALL_PROGRESS_EPS = 24;

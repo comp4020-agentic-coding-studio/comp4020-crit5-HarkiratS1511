@@ -608,15 +608,20 @@ function drawLost(
   drawFrameBrackets(ctx, viewport, PAPER, floodP, 0.55 * floodP);
   drawAnchorBand(ctx, viewport, cy, floodP, PAPER, 0.1);
 
+  // Deliberately modest. The first version drew the chaser at 2.1x this
+  // radius, which filled the frame and read as a portrait of the character
+  // rather than as an ending — the playtester's words were "why is it just a
+  // massive frame of the character". Standing back, with the dark around it
+  // doing the work, it reads as the run being over.
   const massRadius = unit * 0.24;
   const massP = easeOutCubic((t - 0.08) / 0.42);
-  drawLoomingChaser(ctx, cx, cy + massRadius * 0.95, massRadius * 2.1 * massP);
+  drawLoomingChaser(ctx, cx, cy + massRadius * 0.62, massRadius * 1.05 * massP);
 
   const restart = restartAffordance(t);
   drawConnectorStem(
     ctx,
     viewport,
-    cy + massRadius * 0.9,
+    cy + massRadius * 0.7,
     h * 0.76 - unit * 0.08,
     PAPER,
     restart.opacity * 0.5
