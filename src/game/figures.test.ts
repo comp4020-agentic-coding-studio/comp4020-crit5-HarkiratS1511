@@ -13,6 +13,7 @@ import {
   elbowBendAngle,
   bodyBobOffset,
   torsoCounterRotation,
+  driftAt,
 } from "./figures";
 
 /**
@@ -413,5 +414,57 @@ describe("armSwingAngle / elbowBendAngle / bodyBobOffset / torsoCounterRotation"
     expect(bodyBobOffset(Math.PI / 2, 0.05)).toBeCloseTo(0.05, 6);
     expect(bodyBobOffset((3 * Math.PI) / 2, 0.05)).toBeCloseTo(0.05, 6);
     expect(bodyBobOffset(0, 0.05)).toBeCloseTo(0, 6);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// driftAt: layered, mutually-irrational low-frequency drift.
+// ---------------------------------------------------------------------------
+
+describe("driftAt", () => {
+  it("is finite and bounded for a wide range of t and seed", () => {
+    for (const t of [...SAMPLE_TIMES, -50, 0, 1000]) {
+      for (const seed of [0, 1.3, 4.7, -2.1]) {
+        const d = driftAt(t, seed);
+        expectFinite(d);
+        // Sum of amplitudes (0.6 + 0.3 + 0.1) caps the magnitude.
+        expect(Math.abs(d)).toBeLessThanOrEqual(1.0001);
+      }
+    }
+  });
+
+  it("is deterministic: the same (t, seed) always produces the same value", () => {
+    for (const t of SAMPLE_TIMES) {
+      for (const seed of [0, 1.3, 4.7]) {
+        expect(driftAt(t, seed)).toBe(driftAt(t, seed));
+      }
+    }
+  });
+
+  it("is continuous: no adjacent-sample jump above a small threshold across a dense sweep", () => {
+    const dt = 0.01;
+    const maxSlope = 0.31 * 0.6 + 0.137 * 0.3 + 0.0723 * 0.1; // worst-case |d(drift)/dt|
+    let prev = driftAt(0, 1.3);
+    for (let i = 1; i <= 2000; i++) {
+      const t = i * dt;
+      const cur = driftAt(t, 1.3);
+      expect(Math.abs(cur - prev)).toBeLessThanOrEqual(maxSlope * dt + 1e-9);
+      prev = cur;
+    }
+  });
+
+  it("does not repeat over a long window: samples one fastest-term period apart differ", () => {
+    // The fastest term is sin(t*0.31 + seed); its period is 2*PI/0.31. If the
+    // whole sum repeated with that period, the two slower terms would have to
+    // also return to their starting values, which their irrational-relative
+    // frequencies rule out.
+    const fastestPeriod = (2 * Math.PI) / 0.31;
+    for (const seed of [0, 1.3, 4.7]) {
+      for (const t of [0, 0.7, 3.2]) {
+        const a = driftAt(t, seed);
+        const b = driftAt(t + fastestPeriod, seed);
+        expect(Math.abs(a - b)).toBeGreaterThan(1e-3);
+      }
+    }
   });
 });
