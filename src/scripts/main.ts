@@ -2,7 +2,7 @@
 
 import { attachInput } from "../game/input";
 import { buildLevel } from "../game/level";
-import { cameraFor, render, worldScale } from "../game/render";
+import { cameraFor, cameraYFor, render, worldScale } from "../game/render";
 import { SLOWMO_SCALE } from "../game/tuning";
 import type { GameState } from "../game/types";
 import { createState, step } from "../game/world";
@@ -32,7 +32,11 @@ function start(canvas: HTMLCanvasElement): void {
   const input = attachInput(
     canvas,
     () => state,
-    () => ({ camera: cameraFor(state, viewport), scale: worldScale(viewport) }),
+    () => ({
+      camera: cameraFor(state, viewport),
+      cameraY: cameraYFor(state, viewport),
+      scale: worldScale(viewport),
+    }),
     () => {
       state = createState(buildLevel());
     },

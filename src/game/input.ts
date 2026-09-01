@@ -8,7 +8,7 @@ import { strokeFromPoints } from "./world";
 
 /** Maps a client-space point to world space. Supplied by the caller so the
  *  renderer stays the single source of truth for camera and scale. */
-export type Transform = { camera: number; scale: number };
+export type Transform = { camera: number; cameraY: number; scale: number };
 
 export type Input = {
   pointer: PointerState;
@@ -27,10 +27,10 @@ export function attachInput(
 
   const toWorld = (clientX: number, clientY: number): Vec2 => {
     const rect = canvas.getBoundingClientRect();
-    const { camera, scale } = getTransform();
+    const { camera, cameraY, scale } = getTransform();
     return {
       x: camera + (clientX - rect.left) / scale,
-      y: (clientY - rect.top) / scale,
+      y: cameraY + (clientY - rect.top) / scale,
     };
   };
 

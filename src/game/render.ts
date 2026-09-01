@@ -5,7 +5,7 @@
 // geometry.ts and the rest of src/game.
 
 import type { GameState, PointerState, Vec2 } from "./types";
-import { REFERENCE_WIDTH, RUNNER_RADIUS, CHASER_RADIUS, PICKUP_RADIUS } from "./tuning";
+import { GROUND_SCREEN_FRACTION, MIN_SIGHTLINE, REFERENCE_HEIGHT, RUNNER_RADIUS, CHASER_RADIUS, PICKUP_RADIUS } from "./tuning";
 
 const PAPER = "#f4f1e8";
 const INK = "#1a1a2e";
@@ -40,7 +40,20 @@ export function cameraFor(
 /** Exported so the pointer transform in main.ts consumes the SAME scale the
  *  renderer uses. Two definitions would drift and land strokes off-cursor. */
 export function worldScale(viewport: { width: number; height: number }): number {
-  return viewport.width / REFERENCE_WIDTH;
+  return Math.min(
+    viewport.height / REFERENCE_HEIGHT,
+    viewport.width / MIN_SIGHTLINE,
+  );
+}
+
+/** World y at the TOP of the view, chosen so the ground lands at a constant
+ *  fraction of screen height whatever the viewport or scale. */
+export function cameraYFor(
+  state: GameState,
+  viewport: { width: number; height: number },
+): number {
+  const viewHeightWorld = viewport.height / worldScale(viewport);
+  return state.level.groundY - viewHeightWorld * GROUND_SCREEN_FRACTION;
 }
 
 /** Draw one frame. `camera` is the world x at the left edge of the view. */
@@ -90,7 +103,7 @@ export function render(
   const scale = worldScale(viewport);
 
   ctx.save();
-  ctx.translate(-camera * scale, 0);
+  ctx.translate(-camera * scale, -cameraYFor(state, viewport) * scale);
   ctx.scale(scale, scale);
 
   // `pointer.pos` and `pointer.drawing` are already world-space (input.ts

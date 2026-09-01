@@ -2,11 +2,18 @@
 // World units are pixels at the reference height below; the camera scales.
 
 export const REFERENCE_HEIGHT = 540;
-/** Horizontal sightline, in world px, that every viewport must show. Scaling
- *  by height alone gave the 390x844 phone only ~249px of world width — less
- *  than two gap widths, with no run-up visible. Scaling by width instead
- *  keeps the sightline constant and leaves 1920x1080 pixel-identical. */
-export const REFERENCE_WIDTH = 960;
+/** Least horizontal sightline, in world px, any viewport may show. Scaling by
+ *  height alone gave the 390x844 phone ~249px — narrower than two gap widths,
+ *  with no run-up visible and no way to see a gap coming. Scaling purely by
+ *  width instead shrank the figures to specks. So: scale by height, and drop
+ *  the scale only as far as this floor demands. Desktop is unaffected. */
+export const MIN_SIGHTLINE = 700;
+
+/** Where the ground sits down the screen, as a fraction of viewport height.
+ *  Without an explicit vertical anchor the ground floats with the scale — it
+ *  sat at 78% on desktop and 20% on the phone, which is how the same build
+ *  looked composed at one marked viewport and broken at the other. */
+export const GROUND_SCREEN_FRACTION = 0.72;
 
 export const RUN_SPEED = 260;        // px/s, constant and scripted
 export const GRAVITY = 1500;         // px/s^2
