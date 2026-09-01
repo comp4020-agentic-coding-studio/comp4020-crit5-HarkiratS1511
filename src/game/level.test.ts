@@ -8,7 +8,7 @@
 import { describe, expect, it } from "vitest";
 import { buildLevel, LEVEL_COUNT } from "./level";
 import { createState, step } from "./world";
-import { CHASER_RADIUS, MAX_INK, PICKUP_AMOUNT, RUNNER_RADIUS, RUN_SPEED } from "./tuning";
+import { CHASER_RADIUS, MAX_INK, PICKUP_AMOUNT, RUNNER_RADIUS, RUN_SPEED, SPIKE_HEIGHT } from "./tuning";
 import type { Level, Phase, Segment } from "./types";
 
 type Gap = {
@@ -237,7 +237,10 @@ describe("buildLevel: ink budget (requirement 5)", () => {
     "level %i is completable in ink: minimal bridging cost < MAX_INK + pickups",
     (_i, level) => {
       const gaps = realGapsFor(level);
-      const minimalInk = gaps.reduce((sum, g) => sum + gapCost(g), 0);
+      // Spike fields cost ink too: a ramp up, a span over, a way down. Ignoring
+      // them made the budget look comfortable while the level was unwinnable.
+      const minimalInk =
+        gaps.reduce((sum, g) => sum + gapCost(g), 0) + hazardCost(level);
       const pickupTotal = level.pickups.reduce((sum, p) => sum + p.amount, 0);
       expect(minimalInk).toBeLessThan(MAX_INK + pickupTotal);
     },
@@ -247,7 +250,10 @@ describe("buildLevel: ink budget (requirement 5)", () => {
     "level %i genuinely requires collecting (most of) its pickups",
     (_i, level) => {
       const gaps = realGapsFor(level);
-      const minimalInk = gaps.reduce((sum, g) => sum + gapCost(g), 0);
+      // Spike fields cost ink too: a ramp up, a span over, a way down. Ignoring
+      // them made the budget look comfortable while the level was unwinnable.
+      const minimalInk =
+        gaps.reduce((sum, g) => sum + gapCost(g), 0) + hazardCost(level);
       const pickupTotal = level.pickups.reduce((sum, p) => sum + p.amount, 0);
       // Starting ink alone (no pickups) must NOT be enough: the pickups have
       // to matter, or they are decoration.
@@ -274,16 +280,26 @@ describe("buildLevel: ink budget (requirement 5)", () => {
   it.each(ALL_LEVELS.map((l) => [l.index, l] as const))(
     "level %i's pickups sit ON a running platform, reachable in the runner's path",
     (_i, level) => {
+      // The property is that a pickup sits on ground the runner actually runs
+      // over, within reach of it. This used to require the segment beneath to
+      // be FLAT, which was an artifact of the levels being flat; the terrain
+      // now undulates, so the surface is sampled at the pickup's own x.
       for (const p of level.pickups) {
-        const platform = level.groundSegments.find((s) => {
+        const spanning = level.groundSegments.filter((s) => {
           const lo = Math.min(s.a.x, s.b.x);
           const hi = Math.max(s.a.x, s.b.x);
-          return p.pos.x >= lo && p.pos.x <= hi && Math.abs(s.a.y - s.b.y) < 1e-6;
+          return p.pos.x >= lo && p.pos.x <= hi;
         });
-        expect(platform).toBeDefined();
-        // within reach of a runner standing on that platform (radius +
-        // pickup radius is ~38px; the vertical offset used throughout is 18)
-        expect(Math.abs(p.pos.y - platform!.a.y)).toBeLessThan(38);
+        expect(spanning.length).toBeGreaterThan(0);
+        const surfaceY = Math.min(
+          ...spanning.map((s) => {
+            const span = s.b.x - s.a.x;
+            const u = Math.abs(span) < 1e-6 ? 0 : (p.pos.x - s.a.x) / span;
+            return s.a.y + (s.b.y - s.a.y) * u;
+          }),
+        );
+        // radius + pickup radius is ~38px; the authored vertical offset is 18
+        expect(Math.abs(p.pos.y - surfaceY)).toBeLessThan(38);
       }
     },
   );
@@ -333,6 +349,7 @@ function gapRequiresDrawing(gap: Gap): boolean {
       seg(gap.endX, gap.landingY, gap.endX + 4000, gap.landingY),
     ],
     pickups: [],
+    hazards: [],
     startX: gap.startX - 5,
     chaserStartX: gap.startX - 1_000_000, // never interferes
     finishX: gap.endX + 1_000_000, // never triggers a premature "won"
@@ -363,6 +380,15 @@ function gapRequiresDrawing(gap: Gap): boolean {
   }
   // Timed out without dying or crossing (e.g. stuck) -- not a free crossing.
   return false;
+}
+
+/** Cheapest line that clears a spike field: up, over, down. */
+function hazardCost(level: Level): number {
+  const clear = SPIKE_HEIGHT + 10;
+  return level.hazards.reduce(
+    (sum, h) => sum + 2 * Math.hypot(100, clear) + h.width + 12,
+    0,
+  );
 }
 
 function seg(ax: number, ay: number, bx: number, by: number): Segment {
@@ -410,6 +436,7 @@ function gapCrossableWithBridge(gap: Gap, maxSeconds = 20): boolean {
       seg(gap.endX, gap.landingY, gap.endX + 4000, gap.landingY),
     ],
     pickups: [],
+    hazards: [],
     startX: gap.startX - 5,
     chaserStartX: gap.startX - 1_000_000, // never interferes
     finishX: gap.endX + 1_000_000, // never triggers a premature "won"

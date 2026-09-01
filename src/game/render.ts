@@ -5,7 +5,7 @@
 import type { GameState, PointerState, Stroke, Vec2 } from "./types";
 import { GROUND_SCREEN_FRACTION, MIN_SIGHTLINE, REFERENCE_HEIGHT } from "./tuning";
 import { drawChaser, drawGhost, drawRunner } from "./figures";
-import { drawFinish, drawGround, drawPickups, drawSky, drawStrokes } from "./scenery";
+import { drawFinish, drawGround, drawHazards, drawPickups, drawSky, drawStrokes } from "./scenery";
 import { drawEndScreen, drawInkBar, drawSlowmoWash } from "./hud";
 
 const INK = "#1a1a2e";
@@ -60,6 +60,7 @@ export function render(
 
   world();
   drawGround(ctx, state.level, scale);
+  drawHazards(ctx, state.level, state.elapsed);
   drawPickups(ctx, state.level, state.elapsed);
   drawStrokes(ctx, state.strokes, state.level.stub, scale);
   drawFinish(ctx, state.level, state.elapsed);

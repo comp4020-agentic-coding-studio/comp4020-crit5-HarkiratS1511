@@ -13,7 +13,7 @@
 // world x always produces the same silhouette.
 
 import type { Level, Segment, Stroke, Vec2 } from "./types";
-import { GROUND_SCREEN_FRACTION, PICKUP_RADIUS } from "./tuning";
+import { SPIKE_HEIGHT, GROUND_SCREEN_FRACTION, PICKUP_RADIUS } from "./tuning";
 
 const PAPER = "#f4f1e8";
 const INK = "#1a1a2e";
@@ -661,5 +661,46 @@ export function drawFinish(ctx: CanvasRenderingContext2D, level: Level, t: numbe
   ctx.closePath();
   ctx.fill();
 
+  ctx.restore();
+}
+
+
+// ---------------------------------------------------------------------------
+// Spike fields. Drawn as a run of sharp teeth standing on the ground, in the
+// same ink as everything else, because the player has no words to be warned
+// with — the shape has to say "do not touch this" on its own. A gap says
+// "you drew too little"; these say "you drew too low".
+// ---------------------------------------------------------------------------
+export function drawHazards(
+  ctx: CanvasRenderingContext2D,
+  level: Level,
+  t: number,
+): void {
+  if (level.hazards.length === 0) return;
+  ctx.save();
+  ctx.fillStyle = INK;
+  ctx.strokeStyle = INK;
+  ctx.lineJoin = "miter";
+
+  for (const h of level.hazards) {
+    const toothW = 17;
+    const count = Math.max(3, Math.round(h.width / toothW));
+    const w = h.width / count;
+    // A slow shimmer so they read as live and dangerous rather than as scenery.
+    const pulse = 1 + Math.sin(t * 2.2 + h.x * 0.01) * 0.045;
+
+    ctx.beginPath();
+    ctx.moveTo(h.x, h.y);
+    for (let i = 0; i < count; i++) {
+      const x0 = h.x + i * w;
+      ctx.lineTo(x0 + w / 2, h.y - SPIKE_HEIGHT * pulse);
+      ctx.lineTo(x0 + w, h.y);
+    }
+    ctx.closePath();
+    ctx.fill();
+
+    // A base plinth, so the teeth read as mounted rather than floating.
+    ctx.fillRect(h.x - 3, h.y - 3, h.width + 6, 6);
+  }
   ctx.restore();
 }

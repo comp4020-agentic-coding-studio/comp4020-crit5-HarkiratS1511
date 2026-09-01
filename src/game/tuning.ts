@@ -41,7 +41,11 @@ export const CHASER_RADIUS = 16;
 // minimum possible line set left 5-7% slack, and a scripted player drawing
 // only 16px wider per gap than theoretical ran dry on every level. A person
 // draws nowhere near the minimum.
-export const MAX_INK = 1450;         // px of line the player may draw in total
+// Raised again for spike fields: clearing one needs a ramp up, a span over,
+// and a way down, which costs roughly 300px of line that the gap arithmetic
+// never accounted for. Without this, levels 1 and 3 became unwinnable the
+// moment hazards appeared.
+export const MAX_INK = 2050;         // px of line the player may draw in total
 export const INK_PER_PIXEL = 1;      // cost = polyline length * this
 export const PICKUP_AMOUNT = 260;
 export const PICKUP_RADIUS = 26;
@@ -143,3 +147,8 @@ export const CHASER_BREAK_SECONDS = 1.1;
  *  a 4px threshold. Anything genuinely moving covers well over 100px in a
  *  stall window, so a coarse threshold costs nothing. */
 export const STALL_PROGRESS_EPS = 24;
+
+/** How tall a spike field stands above the ground it sits on. The runner's
+ *  centre rides RUNNER_RADIUS above the surface, so anything taller than that
+ *  cannot be walked through and must be drawn over. */
+export const SPIKE_HEIGHT = 30;

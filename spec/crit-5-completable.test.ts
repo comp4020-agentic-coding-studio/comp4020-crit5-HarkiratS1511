@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 import { LEVEL_COUNT } from "../src/game/level";
 import { createState, groundSurfaceYAt, step, strokeFromPoints } from "../src/game/world";
 import { inkCost } from "../src/game/ink";
-import { RUNNER_RADIUS } from "../src/game/tuning";
+import { RUNNER_RADIUS, SPIKE_HEIGHT } from "../src/game/tuning";
 import type { GameState } from "../src/game/types";
 
 function gapsOf(state: GameState): { from: number; to: number }[] {
@@ -36,7 +36,28 @@ function play(levelIndex: number): GameState {
   const STEP = 1 / 120;
   let guard = 0;
 
+  const spiked = new Set<number>();
+
   while (state.phase === "running" && state.elapsed < 300 && guard++ < 400_000) {
+    // Spike fields: the runner cannot jump, so the only answer is a line up,
+    // over and down. Committed on approach, exactly as for a gap.
+    for (const [i, h] of state.level.hazards.entries()) {
+      if (spiked.has(i)) continue;
+      if (state.runner.pos.x < h.x - 260) continue;
+      spiked.add(i);
+      const clear = SPIKE_HEIGHT + 10;
+      const pts = [
+        { x: h.x - 100, y: h.y - 2 },
+        { x: h.x - 6, y: h.y - clear },
+        { x: h.x + h.width + 6, y: h.y - clear },
+        { x: h.x + h.width + 100, y: h.y - 2 },
+      ];
+      const cost = inkCost(pts);
+      if (cost > state.ink) continue;
+      state.ink -= cost;
+      state.strokes.push(strokeFromPoints(pts));
+    }
+
     for (const [i, gap] of gaps.entries()) {
       if (bridged.has(i)) continue;
       if (state.runner.pos.x < gap.from - 260) continue;

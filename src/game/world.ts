@@ -6,6 +6,7 @@ import { resolveMovement, segmentsFromPolyline } from "./geometry";
 import { inkCost } from "./ink";
 import { buildLevel } from "./level";
 import {
+  SPIKE_HEIGHT,
   STALL_PROGRESS_EPS,
   CHASER_BREAK_SECONDS,
   CHASE_BAND_FAR,
@@ -244,6 +245,7 @@ export function step(state: GameState, dt: number, chaserDt: number = dt): void 
   const reach = (state.runner.radius + state.chaser.radius) * CONTACT_TIGHTEN;
   if (dx * dx + dy * dy <= reach * reach) return end(state, "lost");
 
+  if (hitsHazard(state)) return end(state, "lost");
   if (state.runner.pos.y - floor > FALL_KILL_DEPTH) return end(state, "lost");
   if (state.runner.pos.x >= state.level.finishX) return end(state, "won");
 }
@@ -263,6 +265,19 @@ function stepGhost(state: GameState, dt: number, floor: number): void {
   }
   advance(ghost, RUN_SPEED, terrainOnly(state.level), dt);
   if (ghost.pos.y - floor > FALL_KILL_DEPTH * 0.6) ghost.goneFor = 0.0001;
+}
+
+/** A spike field is cleared only by passing above it. The runner's lowest
+ *  point is its centre plus its radius, so riding a drawn line at least
+ *  SPIKE_HEIGHT above the ground carries it over. */
+function hitsHazard(state: GameState): boolean {
+  const r = state.runner;
+  const bottom = r.pos.y + r.radius;
+  for (const h of state.level.hazards) {
+    if (r.pos.x + r.radius < h.x || r.pos.x - r.radius > h.x + h.width) continue;
+    if (bottom > h.y - SPIKE_HEIGHT) return true;
+  }
+  return false;
 }
 
 function collectPickups(state: GameState): void {

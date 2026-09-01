@@ -66,6 +66,7 @@ function makeLevel(): Level {
   return {
     groundSegments: [{ a: { x: 0, y: 500 }, b: { x: 2000, y: 500 } }],
     pickups: [{ pos: { x: 300, y: 480 }, amount: 260, taken: false }],
+    hazards: [],
     startX: 0,
     chaserStartX: -80,
     finishX: 1800,

@@ -18,6 +18,7 @@ function makeLevel(overrides: Partial<Level> = {}): Level {
       { a: { x: 0, y: 500 }, b: { x: 300, y: 500 } },
       { a: { x: 400, y: 500 }, b: { x: 900, y: 500 } },
     ],
+    hazards: [],
     pickups: [
       { pos: { x: 200, y: 480 }, amount: 220, taken: false },
       { pos: { x: 700, y: 480 }, amount: 220, taken: true },

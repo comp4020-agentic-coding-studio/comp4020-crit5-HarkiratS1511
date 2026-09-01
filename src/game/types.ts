@@ -23,10 +23,17 @@ export type Contact = {
 
 export type Pickup = { pos: Vec2; amount: number; taken: boolean };
 
+/** A spike field sitting on the ground. The runner cannot jump, so the only
+ *  answer is to draw a line clear over it — the same verb as a gap, asking a
+ *  different question: a gap punishes drawing too little, a spike field
+ *  punishes drawing too low. */
+export type Hazard = { x: number; width: number; /** Ground y it stands on. */ y: number };
+
 export type Level = {
   /** Static ground. The chaser walks ONLY these — never player strokes. */
   groundSegments: Segment[];
   pickups: Pickup[];
+  hazards: Hazard[];
   startX: number;
   chaserStartX: number;
   finishX: number;

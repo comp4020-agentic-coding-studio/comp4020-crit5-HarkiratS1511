@@ -84,11 +84,115 @@
 // MAX_INK appears throughout the ink-arithmetic comments below; only
 // PICKUP_AMOUNT is needed at runtime.
 import { PICKUP_AMOUNT } from "./tuning";
-import type { Level, Pickup, Segment, Stroke, Vec2 } from "./types";
+import type { Hazard, Level, Pickup, Segment, Stroke, Vec2 } from "./types";
 
 export const LEVEL_COUNT = 4;
 
 const GROUND_Y = 420; // baseline spawn ground height, shared by all levels
+
+// ---------------------------------------------------------------------------
+// UNDULATION
+//
+// The levels are authored as flat platforms, which read as monotonous. Rather
+// than hand-author rolling terrain (and re-derive every gap's takeoff and
+// landing height, and every ink sum, with it), the flat platforms are the
+// source of truth and undulation is applied afterwards as a pure transform.
+//
+// Two properties make that safe. Each platform's endpoints are preserved
+// EXACTLY, so gap widths, lip heights and every ink figure above are unchanged
+// and every gap test still means what it meant. And a flat margin is kept at
+// both ends, so the runner takes off from and lands on level ground and the
+// "is this gap crossable" simulations remain valid.
+//
+// Amplitude is small and the wavelength long — max slope is around 11 degrees,
+// far inside the measured 60-degree climb limit. It is texture, not obstacle.
+// ---------------------------------------------------------------------------
+const UNDULATION_MARGIN = 130; // flat run-in either side of every gap lip
+const UNDULATION_AMPLITUDE = 15;
+const UNDULATION_WAVELENGTH = 300;
+const UNDULATION_MIN_SPAN = 420; // shorter platforms stay flat
+
+/** Deterministic phase per platform, so terrain never shimmers or re-rolls. */
+function undulationPhase(x: number): number {
+  return (Math.sin(x * 0.0137) + Math.sin(x * 0.0061 + 1.7)) * Math.PI;
+}
+
+function undulateSegment(s: Segment): Segment[] {
+  // Only flat, long platforms are undulated; sloped ones are already varied.
+  const span = s.b.x - s.a.x;
+  if (span < UNDULATION_MIN_SPAN || Math.abs(s.b.y - s.a.y) > 0.001) return [s];
+
+  const innerFrom = s.a.x + UNDULATION_MARGIN;
+  const innerTo = s.b.x - UNDULATION_MARGIN;
+  if (innerTo - innerFrom < UNDULATION_WAVELENGTH) return [s];
+
+  const phase = undulationPhase(s.a.x);
+  const steps = Math.max(4, Math.round((innerTo - innerFrom) / 60));
+  const pts: Vec2[] = [{ x: s.a.x, y: s.a.y }, { x: innerFrom, y: s.a.y }];
+  for (let i = 1; i <= steps; i++) {
+    const x = innerFrom + ((innerTo - innerFrom) * i) / steps;
+    const u = (x - innerFrom) / UNDULATION_WAVELENGTH;
+    // Tapered at both ends so it meets the flat margins without a corner.
+    const taper = Math.sin((Math.PI * (x - innerFrom)) / (innerTo - innerFrom));
+    const y = s.a.y - Math.sin(u * Math.PI * 2 + phase) * UNDULATION_AMPLITUDE * taper;
+    pts.push({ x, y });
+  }
+  pts.push({ x: s.b.x, y: s.b.y });
+
+  const out: Segment[] = [];
+  for (let i = 0; i < pts.length - 1; i++) out.push(seg(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y));
+  return out;
+}
+
+function undulate(segments: Segment[]): Segment[] {
+  return segments.flatMap(undulateSegment);
+}
+
+/** Ground height at an x over a set of segments; null over a gap. */
+function surfaceAt(x: number, segs: Segment[]): number | null {
+  let best: number | null = null;
+  for (const t of segs) {
+    const lo = Math.min(t.a.x, t.b.x);
+    const hi = Math.max(t.a.x, t.b.x);
+    if (x < lo || x > hi) continue;
+    const span = t.b.x - t.a.x;
+    const u = Math.abs(span) < 1e-6 ? 0 : (x - t.a.x) / span;
+    const y = t.a.y + (t.b.y - t.a.y) * u;
+    if (best === null || y < best) best = y;
+  }
+  return best;
+}
+
+/** Pickups are authored against flat platforms; undulation then moves the
+ *  ground beneath them. Re-seat each one on the terrain that actually exists,
+ *  or it floats above a dip and the runner passes underneath it. */
+function seatPickups(pickups: Pickup[], segs: Segment[], above: number): Pickup[] {
+  return pickups.map((pk) => {
+    const y = surfaceAt(pk.pos.x, segs);
+    return y === null ? pk : { ...pk, pos: { x: pk.pos.x, y: y - above } };
+  });
+}
+
+/** Spike fields, placed on the flat margin just inside a platform's start so
+ *  they always sit on level ground the player can draw a clean line over. */
+function spikesOn(segments: Segment[], everyNth: number, startAt: number): Hazard[] {
+  const out: Hazard[] = [];
+  // Never in the opening run-up: the first stretch of a level is where the
+  // player is still learning that the runner cannot stop, and a spike field
+  // there kills before anything has been taught.
+  const flat = segments.filter(
+    (s) => s.b.x - s.a.x > 520 && Math.abs(s.b.y - s.a.y) < 0.001 && s.a.x > 700,
+  );
+  for (let i = startAt; i < flat.length; i += everyNth) {
+    const s = flat[i];
+    const width = 92;
+    // Well inside the platform: never adjacent to a lip, so a spike field and
+    // a gap are never the same problem asked twice.
+    const x = s.a.x + (s.b.x - s.a.x) * 0.5 - width / 2;
+    out.push({ x, width, y: s.a.y });
+  }
+  return out;
+}
 
 function seg(ax: number, ay: number, bx: number, by: number): Segment {
   return { a: { x: ax, y: ay }, b: { x: bx, y: by } };
@@ -115,6 +219,7 @@ function pickup(x: number, y: number): Pickup {
 // a shrinking number of increasingly expensive, wide, but straightforward
 // (non-diagonal) chasms."
 function buildLevel0(): Level {
+  const HAZARD_EVERY = 3, HAZARD_START = 0;
   const startX = 0;
   const chaserStartX = -170;
 
@@ -162,9 +267,11 @@ function buildLevel0(): Level {
     pickup(5400, GROUND_Y - 20), // on the run-in to gap 6 (570px, the big one)
   ];
 
+  const rolling = undulate(groundSegments);
   return {
-    groundSegments,
-    pickups,
+    groundSegments: rolling,
+    hazards: spikesOn(groundSegments, HAZARD_EVERY, HAZARD_START),
+    pickups: seatPickups(pickups, rolling, 18),
     startX,
     chaserStartX,
     finishX: 6850,
@@ -209,6 +316,7 @@ function buildLevel0(): Level {
 // both grow every step, so a flat line stops being an option (it would
 // undershoot) well before the level ends.
 function buildLevel1(): Level {
+  const HAZARD_EVERY = 3, HAZARD_START = 0;
   const startX = 0;
   const chaserStartX = -150;
 
@@ -241,9 +349,11 @@ function buildLevel1(): Level {
     pickup(6400, -322 - 18), // on the run-in to the final, steepest step
   ];
 
+  const rolling = undulate(groundSegments);
   return {
-    groundSegments,
-    pickups,
+    groundSegments: rolling,
+    hazards: spikesOn(groundSegments, HAZARD_EVERY, HAZARD_START),
+    pickups: seatPickups(pickups, rolling, 18),
     startX,
     chaserStartX,
     finishX: 7308,
@@ -291,6 +401,7 @@ function buildLevel1(): Level {
 // floor found empirically (dy=0 needs >~27px; small climbs need a few px
 // more) — see the SAFETY note at the top of the file and level.test.ts.
 function buildLevel2(): Level {
+  const HAZARD_EVERY = 2, HAZARD_START = 0;
   const startX = 0;
   const chaserStartX = -130;
 
@@ -330,9 +441,11 @@ function buildLevel2(): Level {
     pickup(3900, 276 - 18),
   ];
 
+  const rolling = undulate(groundSegments);
   return {
-    groundSegments,
-    pickups,
+    groundSegments: rolling,
+    hazards: spikesOn(groundSegments, HAZARD_EVERY, HAZARD_START),
+    pickups: seatPickups(pickups, rolling, 18),
     startX,
     chaserStartX,
     finishX: 6190,
@@ -382,6 +495,7 @@ function buildLevel2(): Level {
 // a downhill line is never too steep to descend (gravity only pulls down),
 // so widening/flattening them was never necessary.
 function buildLevel3(): Level {
+  const HAZARD_EVERY = 3, HAZARD_START = 0;
   const startX = 0;
   const chaserStartX = -110;
 
@@ -414,9 +528,11 @@ function buildLevel3(): Level {
     pickup(5762, 555 - 18), // funds the fourth climb (160px rise)
   ];
 
+  const rolling = undulate(groundSegments);
   return {
-    groundSegments,
-    pickups,
+    groundSegments: rolling,
+    hazards: spikesOn(groundSegments, HAZARD_EVERY, HAZARD_START),
+    pickups: seatPickups(pickups, rolling, 18),
     startX,
     chaserStartX,
     finishX: 7238,
